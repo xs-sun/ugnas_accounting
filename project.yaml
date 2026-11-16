@@ -1,0 +1,45 @@
+spec_version: "2.1"
+app_id: "com.xsguyu.accounting"
+version: "0.1.7"
+support_arch:
+  - amd64
+  - arm64
+supports:
+  - app
+  - pc
+start_cmd: "bin/accounting_serv --port=21010"
+port: 21010
+proxy_path: "api"
+open_type: "inner"
+tag_types:
+  - utility
+depend_fw_version: "1.13.0.0000"
+support_migration: true
+only_admin: false
+privacy_policy_link:
+  - "https://ugnas.xsguyu.com/privacy"
+license_agreement_link:
+  - "https://ugnas.xsguyu.com/license"
+source_code_link:
+  - "https://github.com/xsguyu/accounting"
+technical_support_link:
+  - "https://ugnas.xsguyu.com/support"
+permissions:
+  - "NETWORK.ACCESS_INTERNET"
+i18n:
+  en-US:
+    name: "SevenCats Accounting"
+    description: "Multi-ledger collaborative accounting & wallet asset management for UGOS Pro"
+    author: "xsguyu"
+    official: "https://ugnas.xsguyu.com"
+    help: "https://ugnas.xsguyu.com/help"
+    publisher: "xsguyu studio"
+    publisher_link: "https://ugnas.xsguyu.com"
+  zh-CN:
+    name: "七喵记账"
+    description: "专为绿联云打造的高品质、印刷级质感多账本协同与钱包资产管理工具"
+    author: "七喵工作室"
+    official: "https://ugnas.xsguyu.com"
+    help: "https://ugnas.xsguyu.com/help"
+    publisher: "七喵工作室"
+    publisher_link: "https://ugnas.xsguyu.com"

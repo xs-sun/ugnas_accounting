@@ -1,0 +1,58 @@
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Go / Backend Binaries & Temp Files
+backend/server
+backend/bin/
+backend/logs/
+backend/data/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Rootfs & Output Artifacts
+/bin/
+build_dir/
+rootfs_amd64/bin/*
+!rootfs_amd64/bin/.gitkeep
+rootfs_arm64/bin/*
+!rootfs_arm64/bin/.gitkeep
+rootfs_common/www/*
+!rootfs_common/www/.gitkeep
+.check-app/
+
+# SQLite Databases & Local Runtime Data
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/*.db-journal
+logs/
+
+# Agent artifacts
+.agents/
+
+# IDE & Editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*~
