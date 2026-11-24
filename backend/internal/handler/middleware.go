@@ -170,6 +170,11 @@ func isPublicRoute(path string) bool {
 	if strings.HasPrefix(path, "/api/v1/auth/") {
 		return true
 	}
+	// SSE 流：中间件跳过，鉴权由 StreamHandler 自己做（EventSource 发不了
+	// Authorization 头，token 走 ?token= 查询参数）。
+	if path == "/api/v1/stream" {
+		return true
+	}
 	if strings.HasPrefix(path, "/api/v1/avatars/") {
 		return true
 	}

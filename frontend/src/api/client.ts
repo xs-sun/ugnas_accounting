@@ -18,8 +18,13 @@ import type {
   BudgetOverview,
   RecurringRule,
   CreateRecurringPayload,
+  ActivityListResponse,
   Snapshot,
   ImportedItem,
+  SuishoujiParseResult,
+  SuishoujiPreviewRow,
+  SuishoujiCommitResult,
+  SuishoujiColumnTarget,
   UserProfile,
   AuthStatusResponse,
   GatewayAuthResponse,
@@ -481,6 +486,18 @@ export const api = {
   async joinBookByCode(data: { invite_code: string }): Promise<Book> {
     return jsonRequest<Book>('/api/v1/books/join', 'POST', data);
   },
+  async listActivities(
+    bookId: string,
+    params?: { limit?: number; before?: string }
+  ): Promise<ActivityListResponse> {
+    const sp = new URLSearchParams();
+    if (params?.limit) sp.set('limit', String(params.limit));
+    if (params?.before) sp.set('before', params.before);
+    const qs = sp.toString();
+    return request<ActivityListResponse>(
+      `/api/v1/books/${encodeURIComponent(bookId)}/activities${qs ? `?${qs}` : ''}`
+    );
+  },
 
   // ==================== Wallets ====================
   async listWallets(bookId?: string): Promise<Wallet[]> {
@@ -751,6 +768,33 @@ export const api = {
       wallet_id: walletId,
       items,
     });
+  },
+  async parseSuishouji(file: File, bookId: string): Promise<SuishoujiParseResult> {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('book_id', bookId);
+    return request<SuishoujiParseResult>('/api/v1/imports/suishouji/parse', {
+      method: 'POST',
+      body: formData,
+    });
+  },
+  async previewSuishouji(data: {
+    book_id: string;
+    mapping: Record<string, SuishoujiColumnTarget>;
+    default_wallet_id: string;
+    headers: string[];
+    rows: string[][];
+  }): Promise<{ preview: SuishoujiPreviewRow[] }> {
+    return jsonRequest<{ preview: SuishoujiPreviewRow[] }>('/api/v1/imports/suishouji/preview', 'POST', data);
+  },
+  async commitSuishouji(data: {
+    book_id: string;
+    mapping: Record<string, SuishoujiColumnTarget>;
+    default_wallet_id: string;
+    headers: string[];
+    rows: string[][];
+  }): Promise<SuishoujiCommitResult> {
+    return jsonRequest<SuishoujiCommitResult>('/api/v1/imports/suishouji/commit', 'POST', data);
   },
 
   // ==================== Snapshots ====================

@@ -1057,3 +1057,172 @@ func (r *TransactionRepo) GetStatsReport(ctx context.Context, bookID, period, tx
 		TopTransactions: topTxs,
 	}, nil
 }
+
+// GetRangeStats 聚合任意起止日期区间内的收支：总额、按一级分类、按月。
+// categoryID 为空表示不过滤；非空时包含该分类本身及其子分类的流水。
+func (r *TransactionRepo) GetRangeStats(ctx context.Context, bookID, startDate, endDate, txType, categoryID string) (*model.RangeStats, error) {
+	if txType != "expense" && txType != "income" {
+		txType = ""
+	}
+	where := []string{"t.book_id = ?", "t.date >= ?", "t.date <= ?"}
+	args := []interface{}{bookID, startDate, endDate}
+	if categoryID != "" {
+		where = append(where, "(t.category_id = ? OR c.parent_id = ?)")
+		args = append(args, categoryID, categoryID)
+	}
+	whereSQL := strings.Join(where, " AND ")
+	joinCat := "LEFT JOIN categories c ON t.category_id = c.id"
+
+	res := &model.RangeStats{
+		StartDate:  startDate,
+		EndDate:    endDate,
+		Categories: make([]model.StatsCategoryItem, 0),
+		Monthly:    make([]model.RangeMonthItem, 0),
+	}
+
+	sumQuery := fmt.Sprintf(`
+		SELECT t.type, COALESCE(SUM(t.amount), 0)
+		FROM transactions t %s
+		WHERE %s AND t.type IN ('expense', 'income')
+		GROUP BY t.type
+	`, joinCat, whereSQL)
+	sumRows, err := r.db.QueryContext(ctx, sumQuery, args...)
+	if err != nil {
+		return nil, err
+	}
+	for sumRows.Next() {
+		var t string
+		var amt int64
+		if err := sumRows.Scan(&t, &amt); err == nil {
+			if t == "expense" {
+				res.TotalExpense = amt
+			} else if t == "income" {
+				res.TotalIncome = amt
+			}
+		}
+	}
+	sumRows.Close()
+	res.NetSavings = res.TotalIncome - res.TotalExpense
+
+	catArgs := append([]interface{}{}, args...)
+	catTypeFilter := ""
+	if txType != "" {
+		catTypeFilter = " AND t.type = ?"
+		catArgs = append(catArgs, txType)
+	}
+	catQuery := fmt.Sprintf(`
+		SELECT COALESCE(p.id, c.id, 'uncategorized') as top_id,
+		       COALESCE(p.name, c.name, '未分类') as top_name,
+		       COALESCE(p.icon, c.icon, 'tag') as top_icon,
+		       COALESCE(p.color, c.color, '#64748B') as top_color,
+		       COALESCE(p.bg_color, c.bg_color, '#F1F5F9') as top_bg,
+		       COALESCE(SUM(t.amount), 0) as total_amt,
+		       COUNT(*) as cnt
+		FROM transactions t
+		LEFT JOIN categories c ON t.category_id = c.id
+		LEFT JOIN categories p ON c.parent_id = p.id
+		WHERE %s%s
+		GROUP BY top_id
+		ORDER BY total_amt DESC
+	`, whereSQL, catTypeFilter)
+	catRows, err := r.db.QueryContext(ctx, catQuery, catArgs...)
+	if err != nil {
+		return nil, err
+	}
+	typeTotal := res.TotalExpense + res.TotalIncome
+	if txType == "expense" {
+		typeTotal = res.TotalExpense
+	} else if txType == "income" {
+		typeTotal = res.TotalIncome
+	}
+	for catRows.Next() {
+		var item model.StatsCategoryItem
+		if err := catRows.Scan(&item.CategoryID, &item.CategoryName, &item.CategoryIcon, &item.CategoryColor, &item.BgColor, &item.Amount, &item.Count); err != nil {
+			catRows.Close()
+			return nil, err
+		}
+		if typeTotal > 0 {
+			item.Percentage = int((item.Amount * 100) / typeTotal)
+		}
+		res.Categories = append(res.Categories, item)
+	}
+	catRows.Close()
+
+	monQuery := fmt.Sprintf(`
+		SELECT substr(t.date, 1, 7) as ym, t.type, COALESCE(SUM(t.amount), 0)
+		FROM transactions t %s
+		WHERE %s AND t.type IN ('expense', 'income')
+		GROUP BY ym, t.type
+		ORDER BY ym ASC
+	`, joinCat, whereSQL)
+	monRows, err := r.db.QueryContext(ctx, monQuery, args...)
+	if err != nil {
+		return nil, err
+	}
+	monMap := make(map[string]*model.RangeMonthItem)
+	var monOrder []string
+	for monRows.Next() {
+		var ym, t string
+		var amt int64
+		if err := monRows.Scan(&ym, &t, &amt); err != nil {
+			continue
+		}
+		slot, ok := monMap[ym]
+		if !ok {
+			slot = &model.RangeMonthItem{Month: ym}
+			monMap[ym] = slot
+			monOrder = append(monOrder, ym)
+		}
+		if t == "expense" {
+			slot.Expense = amt
+		} else if t == "income" {
+			slot.Income = amt
+		}
+	}
+	monRows.Close()
+	for _, ym := range monOrder {
+		res.Monthly = append(res.Monthly, *monMap[ym])
+	}
+	return res, nil
+}
+
+// GetMemberTotals 按创建人汇总一段时间内的收支（用于 Agent query_members 工具）。
+func (r *TransactionRepo) GetMemberTotals(ctx context.Context, bookID, startDate, endDate string) ([]model.MemberTotal, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT created_by, t.type, COALESCE(SUM(amount), 0), COUNT(*)
+		FROM transactions t
+		WHERE t.book_id = ? AND t.date >= ? AND t.date <= ? AND t.type IN ('expense', 'income')
+		GROUP BY created_by, t.type
+	`, bookID, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	totals := make(map[string]*model.MemberTotal)
+	var order []string
+	for rows.Next() {
+		var userID, t string
+		var amt int64
+		var cnt int
+		if err := rows.Scan(&userID, &t, &amt, &cnt); err != nil {
+			continue
+		}
+		slot, ok := totals[userID]
+		if !ok {
+			slot = &model.MemberTotal{UserID: userID}
+			totals[userID] = slot
+			order = append(order, userID)
+		}
+		if t == "expense" {
+			slot.Expense = amt
+		} else if t == "income" {
+			slot.Income = amt
+		}
+		slot.Count += cnt
+	}
+	out := make([]model.MemberTotal, 0, len(order))
+	for _, id := range order {
+		out = append(out, *totals[id])
+	}
+	return out, rows.Err()
+}

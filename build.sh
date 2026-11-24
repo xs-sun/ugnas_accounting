@@ -16,6 +16,7 @@
 # ==============================================================================
 
 set -euo pipefail
+umask 0022
 
 # ------------------------------------------------------------------------------
 # Constants & Colors
@@ -242,7 +243,7 @@ if [ "$SKIP_BACKEND" = false ]; then
   if [ "$FORCE_DOCKER" = true ]; then
     if command -v docker &>/dev/null && docker info &>/dev/null; then
       USE_DOCKER=true
-      log_info "Forcing Docker Go compilation container (golang:1.22-alpine)"
+      log_info "Forcing Docker Go compilation container (golang:1.26-alpine)"
     else
       log_error "--docker flag requested, but Docker is not installed or daemon is not running."
       exit 1
@@ -396,15 +397,20 @@ EOF
     local zig_bin=""
     if command -v zig &>/dev/null; then
       zig_bin="$(command -v zig)"
-    elif [ -x "$HOME/.local/bin/zig" ]; then
-      zig_bin="$HOME/.local/bin/zig"
+    else
+      for candidate in "$HOME/.local/bin/zig" "/opt/homebrew/bin/zig" "/usr/local/bin/zig"; do
+        if [ -x "$candidate" ]; then
+          zig_bin="$candidate"
+          break
+        fi
+      done
     fi
 
     if [ -n "$zig_bin" ]; then
       log_info "Compiling native static ELF launchers (bin/accounting_serv) via zig (${zig_bin})..."
       "$zig_bin" cc -target x86_64-linux-musl -static -O2 -s "$ROOT_DIR/backend/cmd/launcher/main.c" -o "$ROOT_DIR/rootfs_amd64/bin/accounting_serv"
       "$zig_bin" cc -target aarch64-linux-musl -static -O2 -s "$ROOT_DIR/backend/cmd/launcher/main.c" -o "$ROOT_DIR/rootfs_arm64/bin/accounting_serv"
-      chmod +x "$ROOT_DIR/rootfs_amd64/bin/accounting_serv" "$ROOT_DIR/rootfs_arm64/bin/accounting_serv"
+      chmod 0755 "$ROOT_DIR/rootfs_amd64/bin/accounting_serv" "$ROOT_DIR/rootfs_arm64/bin/accounting_serv"
     elif command -v docker &>/dev/null && docker info &>/dev/null; then
       log_info "Compiling native static ELF launchers (bin/accounting_serv) via Docker..."
       docker run --rm -v "$ROOT_DIR":/work -w /work debian:bookworm-slim sh -c "
@@ -412,7 +418,11 @@ EOF
         gcc -static -O2 -s backend/cmd/launcher/main.c -o rootfs_amd64/bin/accounting_serv &&
         aarch64-linux-gnu-gcc -static -O2 -s backend/cmd/launcher/main.c -o rootfs_arm64/bin/accounting_serv
       "
-      chmod +x "$ROOT_DIR/rootfs_amd64/bin/accounting_serv" "$ROOT_DIR/rootfs_arm64/bin/accounting_serv"
+      chmod 0755 "$ROOT_DIR/rootfs_amd64/bin/accounting_serv" "$ROOT_DIR/rootfs_arm64/bin/accounting_serv"
+    elif [ "$DO_PACK" = true ] && [ "${ALLOW_POSIX_LAUNCHER:-0}" != "1" ]; then
+      log_error "Neither zig nor Docker daemon available; refusing to pack .upk with POSIX shell fallback launcher."
+      log_info "Install zig (e.g. 'brew install zig' or ~/.local/bin/zig) or start Docker so bin/accounting_serv is compiled as a static ELF binary."
+      exit 1
     else
       log_warn "Neither zig nor Docker daemon available; generating zero-dependency POSIX #!/bin/sh launchers..."
       write_posix_launcher "$ROOT_DIR/rootfs_amd64/bin/accounting_serv"
@@ -469,7 +479,7 @@ EOF
         -v "$ROOT_DIR/rootfs_arm64/bin":/out/arm64 \
         -v "$HOME/go/pkg/mod":/go/pkg/mod \
         -w /src \
-        golang:1.24-alpine \
+        golang:1.26-alpine \
         sh -c '
           set -e
           echo "Building Linux amd64..."
@@ -495,7 +505,7 @@ EOF
       cd "$ROOT_DIR"
     fi
 
-    chmod +x "$AMD64_BIN" "$ARM64_BIN"
+    chmod 0755 "$AMD64_BIN" "$ARM64_BIN"
     compile_native_launchers
 
     # Validate binaries and launchers
@@ -511,6 +521,29 @@ EOF
   fi
 fi
 
+normalize_rootfs_permissions() {
+  log_info "Normalizing rootfs permissions (dirs 0755, files 0644, bins 0755)..."
+  for dir in "$ROOT_DIR/rootfs_common" "$ROOT_DIR/rootfs_amd64" "$ROOT_DIR/rootfs_arm64"; do
+    if [ -d "$dir" ]; then
+      find "$dir" -type d -exec chmod 0755 {} +
+      find "$dir" -type f -exec chmod 0644 {} +
+    fi
+  done
+  for bin in "$ROOT_DIR/rootfs_amd64/bin/accounting_core" \
+             "$ROOT_DIR/rootfs_amd64/bin/accounting_serv" \
+             "$ROOT_DIR/rootfs_arm64/bin/accounting_core" \
+             "$ROOT_DIR/rootfs_arm64/bin/accounting_serv"; do
+    if [ -f "$bin" ]; then
+      chmod 0755 "$bin"
+    fi
+  done
+}
+
+is_elf_binary() {
+  local f="$1"
+  [ -f "$f" ] && [ "$(od -An -tx1 -N4 "$f" 2>/dev/null | tr -d ' \n')" = "7f454c46" ]
+}
+
 # ------------------------------------------------------------------------------
 # Step 4: UGOS Pro Package Validation & Packaging
 # ------------------------------------------------------------------------------
@@ -518,6 +551,24 @@ if [ "$DO_RUN" = true ] && [ "$DO_PACK" = false ]; then
   log_info "Skipping package validation for direct local run."
 else
   log_step "[4/4] Package Structure Validation & Packaging"
+  normalize_rootfs_permissions
+
+  if [ "$DO_PACK" = true ] && [ "${ALLOW_POSIX_LAUNCHER:-0}" != "1" ]; then
+    CHECK_ARCHS=()
+    if [ "$TARGET_ARCH" = "all" ] || [ "$TARGET_ARCH" = "amd64" ]; then
+      CHECK_ARCHS+=("amd64")
+    fi
+    if [ "$TARGET_ARCH" = "all" ] || [ "$TARGET_ARCH" = "arm64" ]; then
+      CHECK_ARCHS+=("arm64")
+    fi
+    for arch in "${CHECK_ARCHS[@]}"; do
+      launcher="$ROOT_DIR/rootfs_${arch}/bin/accounting_serv"
+      if ! is_elf_binary "$launcher"; then
+        log_error "Launcher $launcher is not a native ELF binary! Refusing to pack broken .upk."
+        exit 1
+      fi
+    done
+  fi
 
   # 4.1 Check package structure
   if [ -n "$UGCLI_BIN" ]; then

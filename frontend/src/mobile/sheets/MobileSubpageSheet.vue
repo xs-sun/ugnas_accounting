@@ -15,9 +15,14 @@ import type {
   CategoryTreeNode,
   ImportedItem,
   RecurringRule,
+  SuishoujiColumnTarget,
+  SuishoujiCommitResult,
+  SuishoujiParseResult,
+  SuishoujiPreviewRow,
   Wallet,
   WalletType,
 } from '@/types';
+import { SUISHOUJI_TARGET_OPTIONS } from '@/types';
 import type { SubpageType } from '../types';
 import BottomSheet from '../components/BottomSheet.vue';
 import AccountNetWorthCard from '@/components/shared/AccountNetWorthCard.vue';
@@ -843,12 +848,24 @@ async function submitBindEmail() {
 }
 
 // ==================== 7. 导入与导出 CSV ====================
-const importPlatform = ref<'wechat' | 'alipay'>('wechat');
+const importPlatform = ref<'wechat' | 'alipay' | 'suishouji'>('wechat');
 const parsingImport = ref(false);
 const committingImport = ref(false);
 const importedItems = ref<ImportedItem[]>([]);
 const importWalletId = ref('');
 const exportingCsv = ref(false);
+
+// 随手记导入状态
+const suishoujiResult = ref<SuishoujiParseResult | null>(null);
+const suishoujiMapping = ref<Record<string, SuishoujiColumnTarget>>({});
+const suishoujiPreview = ref<SuishoujiPreviewRow[]>([]);
+const suishoujiPreviewLoading = ref(false);
+const suishoujiCommitResult = ref<SuishoujiCommitResult | null>(null);
+
+const suishoujiMappingComplete = computed(() => {
+  const vals = Object.values(suishoujiMapping.value);
+  return vals.includes('date') && vals.includes('amount');
+});
 
 const importSummary = computed(() => {
   let expense = 0;
@@ -863,6 +880,70 @@ const importSummary = computed(() => {
 function initImportExportState() {
   importedItems.value = [];
   importWalletId.value = store.activeWallets[0]?.id || '';
+  suishoujiResult.value = null;
+  suishoujiMapping.value = {};
+  suishoujiPreview.value = [];
+  suishoujiCommitResult.value = null;
+}
+
+async function refreshSuishoujiPreview() {
+  if (!suishoujiResult.value || !store.activeBookId) return;
+  suishoujiPreviewLoading.value = true;
+  try {
+    const res = await api.previewSuishouji({
+      book_id: store.activeBookId,
+      mapping: suishoujiMapping.value,
+      default_wallet_id: importWalletId.value || suishoujiResult.value.default_wallet_id,
+      headers: suishoujiResult.value.headers,
+      rows: suishoujiResult.value.rows.slice(0, 10),
+    });
+    suishoujiPreview.value = res.preview || [];
+  } catch (err: any) {
+    store.showToast(err?.message || '预览失败', 'error');
+  } finally {
+    suishoujiPreviewLoading.value = false;
+  }
+}
+
+function applySuishoujiAiSuggestions() {
+  if (!suishoujiResult.value) return;
+  suishoujiMapping.value = { ...suishoujiResult.value.ai_suggestions };
+  void refreshSuishoujiPreview();
+}
+
+async function handleCommitSuishouji() {
+  if (!suishoujiResult.value || committingImport.value) return;
+  const bid = store.activeBookId;
+  if (!bid) {
+    store.showToast('请先选择目标账本', 'error');
+    return;
+  }
+  if (!suishoujiMappingComplete.value) {
+    store.showToast('请先完成字段映射：日期和金额列必须映射', 'error');
+    return;
+  }
+  const wid = importWalletId.value || suishoujiResult.value.default_wallet_id || store.activeWallets[0]?.id || '';
+  if (!wid) {
+    store.showToast('请先选择入账账户', 'error');
+    return;
+  }
+  committingImport.value = true;
+  try {
+    const res = await api.commitSuishouji({
+      book_id: bid,
+      mapping: suishoujiMapping.value,
+      default_wallet_id: wid,
+      headers: suishoujiResult.value.headers,
+      rows: suishoujiResult.value.rows,
+    });
+    suishoujiCommitResult.value = res;
+    await store.refreshBookData(bid);
+    store.showToast(`导入完成：成功 ${res.inserted} 条，重复跳过 ${res.duplicates} 条，失败 ${res.failed} 条`, 'success');
+  } catch (err: any) {
+    store.showToast(err?.message || '提交导入失败', 'error');
+  } finally {
+    committingImport.value = false;
+  }
 }
 
 async function handleExportCsv() {
@@ -900,6 +981,24 @@ async function handleImportFileChange(e: Event) {
 
   parsingImport.value = true;
   try {
+    if (importPlatform.value === 'suishouji') {
+      if (!store.activeBookId) {
+        store.showToast('请先选择账本', 'error');
+        return;
+      }
+      const res = await api.parseSuishouji(file, store.activeBookId);
+      suishoujiResult.value = res;
+      suishoujiMapping.value = { ...(res.auto_mapping || {}) };
+      suishoujiPreview.value = res.preview || [];
+      suishoujiCommitResult.value = null;
+      if (res.default_wallet_id) importWalletId.value = res.default_wallet_id;
+      if (res.total_rows === 0) {
+        store.showToast('文件中未解析到有效数据行', 'info');
+      } else {
+        store.showToast(`成功解析 ${res.total_rows} 行，请核对字段映射`, 'success');
+      }
+      return;
+    }
     const res =
       importPlatform.value === 'wechat'
         ? await api.importWeChat(file)
@@ -922,6 +1021,10 @@ async function handleImportFileChange(e: Event) {
 }
 
 async function handleCommitImport() {
+  if (importPlatform.value === 'suishouji') {
+    await handleCommitSuishouji();
+    return;
+  }
   if (!importedItems.value.length || committingImport.value) return;
   const bid = store.activeBookId;
   const wid = importWalletId.value || store.activeWallets[0]?.id || '';
@@ -2159,16 +2262,16 @@ function closeSheet() {
           </button>
         </div>
 
-        <!-- 导入微信 / 支付宝账单 -->
+        <!-- 导入微信 / 支付宝 / 随手记账单 -->
         <div class="app-card p-4 space-y-3">
           <div>
-            <h4 class="text-xs font-bold text-[#18181B]">导入微信 / 支付宝账单</h4>
+            <h4 class="text-xs font-bold text-[#18181B]">导入微信 / 支付宝 / 随手记账单</h4>
             <p class="text-[11px] text-[#64748B] mt-0.5">
-              上传平台导出的 CSV 明细文件，解析预览后再批量入账
+              上传平台导出的明细文件，解析预览后再批量入账
             </p>
           </div>
 
-          <div class="p-1 rounded-2xl bg-[#ECEEF2] grid grid-cols-2 text-xs font-semibold">
+          <div class="p-1 rounded-2xl bg-[#ECEEF2] grid grid-cols-3 text-xs font-semibold">
             <button
               type="button"
               class="py-1.5 rounded-xl transition"
@@ -2193,6 +2296,18 @@ function closeSheet() {
             >
               支付宝账单 CSV
             </button>
+            <button
+              type="button"
+              class="py-1.5 rounded-xl transition"
+              :class="
+                importPlatform === 'suishouji'
+                  ? 'bg-white text-[#DE8A1E] shadow-xs'
+                  : 'text-[#64748B]'
+              "
+              @click="importPlatform = 'suishouji'"
+            >
+              随手记 Excel / CSV
+            </button>
           </div>
 
           <label
@@ -2207,12 +2322,14 @@ function closeSheet() {
               {{
                 parsingImport
                   ? '正在解析文件…'
-                  : `选择${importPlatform === 'wechat' ? '微信' : '支付宝'} CSV 文件`
+                  : importPlatform === 'suishouji'
+                    ? '选择随手记 Excel / CSV 文件'
+                    : `选择${importPlatform === 'wechat' ? '微信' : '支付宝'} CSV 文件`
               }}
             </span>
             <input
               type="file"
-              accept=".csv,text/csv,text/plain"
+              :accept="importPlatform === 'suishouji' ? '.xlsx,.xls,.csv,text/csv' : '.csv,text/csv,text/plain'"
               class="hidden"
               :disabled="parsingImport"
               @change="handleImportFileChange"
@@ -2295,6 +2412,112 @@ function closeSheet() {
                 @click="handleCommitImport"
               >
                 {{ committingImport ? '导入中…' : `确认导入 ${importedItems.length} 笔` }}
+              </button>
+            </div>
+          </div>
+
+          <!-- 随手记：字段映射 -->
+          <div v-if="suishoujiResult" class="space-y-3 pt-2 border-t border-[#F1F3F6]">
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-xs font-bold text-[#18181B]">字段映射（共 {{ suishoujiResult.total_rows }} 行）</span>
+              <button
+                v-if="suishoujiResult.ai_available"
+                type="button"
+                class="px-2.5 py-1.5 rounded-lg bg-[#FFF6E8] text-[#DE8A1E] text-[11px] font-semibold"
+                @click="applySuishoujiAiSuggestions"
+              >
+                采用 AI 建议
+              </button>
+              <span v-else class="text-[10px] text-[#94A3B8]">
+                {{ suishoujiResult.ai_reason === 'ai_limit' ? 'AI 今日调用已达上限' : '未配置 AI 模型' }}，请手动映射
+              </span>
+            </div>
+            <div class="space-y-2">
+              <div
+                v-for="header in suishoujiResult.headers"
+                :key="header"
+                class="flex items-center gap-2 text-xs"
+              >
+                <span class="w-24 shrink-0 font-semibold text-[#18181B] truncate" :title="header">{{ header }}</span>
+                <span class="text-[#94A3B8] shrink-0">→</span>
+                <select
+                  v-model="suishoujiMapping[header]"
+                  class="flex-1 min-w-0 h-8 rounded-lg border border-[#E2E8F0] bg-white px-2 text-xs font-medium text-[#18181B] outline-none"
+                  @change="refreshSuishoujiPreview"
+                >
+                  <option
+                    v-for="opt in SUISHOUJI_TARGET_OPTIONS"
+                    :key="opt.value"
+                    :value="opt.value"
+                  >
+                    {{ opt.label }}
+                  </option>
+                </select>
+              </div>
+            </div>
+            <p v-if="!suishoujiMappingComplete" class="text-[11px] text-[#D6553E]">
+              日期和金额列必须映射后才能导入
+            </p>
+
+            <div class="flex items-center justify-between gap-2 text-xs">
+              <span class="text-[#64748B] shrink-0">导入至账户</span>
+              <CustomDropdown
+                v-model="importWalletId"
+                :options="walletDropdownOptions"
+                placeholder="选择目标账户"
+                width-class="w-48"
+                size="sm"
+              />
+            </div>
+
+            <!-- 随手记：预览前 10 行 -->
+            <div class="max-h-52 overflow-y-auto phone-scroll divide-y divide-[#F1F3F6] border border-[#ECEEF2] rounded-xl">
+              <div
+                v-for="row in suishoujiPreview"
+                :key="row.row_index"
+                class="px-3 py-2 flex items-center justify-between gap-2 text-xs"
+              >
+                <div class="min-w-0">
+                  <p class="font-semibold text-[#18181B] truncate">{{ row.title || '—' }}</p>
+                  <p class="text-[10px] truncate" :class="row.valid ? 'text-[#94A3B8]' : 'text-[#D6553E]'">
+                    {{ row.valid ? `${row.date} · ${row.category_name}${row.sub_category ? ' · ' + row.sub_category : ''} · ${row.wallet_name}` : row.error }}
+                  </p>
+                </div>
+                <span
+                  class="font-bold tabular-nums shrink-0"
+                  :class="row.type === 'income' ? 'text-[#3E8E63]' : 'text-[#D6553E]'"
+                >
+                  {{ row.valid ? formatMoney(row.amount_cents, { showSign: true, type: row.type }) : '—' }}
+                </span>
+              </div>
+              <p v-if="suishoujiPreviewLoading" class="py-2 text-center text-[11px] text-[#94A3B8]">刷新预览中…</p>
+            </div>
+
+            <!-- 随手记：导入结果 -->
+            <div v-if="suishoujiCommitResult" class="rounded-xl bg-[#ECF6F0] px-3 py-2.5 text-xs">
+              <p class="font-bold text-[#18181B]">
+                导入完成：成功 {{ suishoujiCommitResult.inserted }} 条，重复跳过 {{ suishoujiCommitResult.duplicates }} 条，失败 {{ suishoujiCommitResult.failed }} 条
+              </p>
+              <p v-for="f in suishoujiCommitResult.failures" :key="f.row" class="text-[#D6553E] mt-1">
+                第 {{ f.row }} 行：{{ f.reason }}
+              </p>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                class="py-2.5 rounded-xl bg-[#F5F6F8] text-xs font-semibold text-[#64748B]"
+                @click="suishoujiResult = null; suishoujiPreview = []; suishoujiCommitResult = null"
+              >
+                清空重选
+              </button>
+              <button
+                type="button"
+                :disabled="committingImport || !suishoujiMappingComplete"
+                class="py-2.5 rounded-xl bg-[#DE8A1E] text-white text-xs font-semibold hover:bg-[#C67612] disabled:opacity-60 transition"
+                @click="handleCommitImport"
+              >
+                {{ committingImport ? '导入中…' : `确认导入 ${suishoujiResult.total_rows} 笔` }}
               </button>
             </div>
           </div>

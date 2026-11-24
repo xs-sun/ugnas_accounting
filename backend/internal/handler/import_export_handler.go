@@ -2,22 +2,52 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 
+	"com.xsguyu.accounting/backend/internal/model"
+	"com.xsguyu.accounting/backend/internal/repository"
 	"com.xsguyu.accounting/backend/internal/service"
 )
 
 type ImportExportHandler struct {
 	importService *service.ImportService
 	exportService *service.ExportService
+	hub           *service.Hub
+	recorder      *service.ActivityRecorder
+	aiSvc         *service.AiService
+	bookRepo      *repository.BookRepo
 }
 
-func NewImportExportHandler(importService *service.ImportService, exportService *service.ExportService) *ImportExportHandler {
+func NewImportExportHandler(importService *service.ImportService, exportService *service.ExportService, hub *service.Hub, recorder *service.ActivityRecorder, aiSvc *service.AiService, bookRepo *repository.BookRepo) *ImportExportHandler {
 	return &ImportExportHandler{
 		importService: importService,
 		exportService: exportService,
+		hub:           hub,
+		recorder:      recorder,
+		aiSvc:         aiSvc,
+		bookRepo:      bookRepo,
 	}
+}
+
+// requireBookWriter 校验请求者是目标账本的成员且不是只读 viewer；否则返回 false（已写错误响应）。
+func (h *ImportExportHandler) requireBookWriter(w http.ResponseWriter, r *http.Request, bookID string) bool {
+	uCtx := GetUserContext(r)
+	if bookID == "" {
+		sendError(w, http.StatusBadRequest, "book_id required")
+		return false
+	}
+	role, err := h.bookRepo.GetMemberRole(r.Context(), bookID, uCtx.ID)
+	if err != nil || role == "" {
+		sendError(w, http.StatusForbidden, "not a member of this book")
+		return false
+	}
+	if role == "viewer" {
+		sendError(w, http.StatusForbidden, "viewers cannot import")
+		return false
+	}
+	return true
 }
 
 // ExportLedger godoc
@@ -160,8 +190,232 @@ func (h *ImportExportHandler) CommitImport(w http.ResponseWriter, r *http.Reques
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if inserted > 0 {
+		recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+			BookID:    req.BookID,
+			UserID:    uCtx.ID,
+			ActorName: uCtx.Name,
+			Action:    model.ActivityImportCommitted,
+			Summary:   fmt.Sprintf("导入了 %d 条流水", inserted),
+		}, service.ChangeTransaction)
+		h.recorder.CheckBudgets(r.Context(), req.BookID)
+	}
 
 	sendJSON(w, 0, http.StatusOK, "success", map[string]interface{}{
 		"inserted": inserted,
+	})
+}
+
+// ParseSuishouji godoc
+// @Summary 解析随手记导出的 Excel/CSV 文件
+// @Description 上传随手记导出的 .xlsx/.xls/.csv 文件，表头自适应解析，返回表头、自动映射与 AI 建议映射
+// @Tags Import & Export
+// @Accept multipart/form-data
+// @Produce json
+// @Param book_id formData string true "目标账本 ID"
+// @Param file formData file true "随手记导出文件"
+// @Success 200 {object} Response{data=object} "解析预览结果"
+// @Failure 400 {object} Response "文件格式不合法"
+// @Failure 403 {object} Response "非账本成员"
+// @Router /api/v1/imports/suishouji/parse [post]
+func (h *ImportExportHandler) ParseSuishouji(w http.ResponseWriter, r *http.Request) {
+	const maxUploadSize = 10 * 1024 * 1024
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
+	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
+		sendError(w, http.StatusRequestEntityTooLarge, "file too large (max 10MB)")
+		return
+	}
+	bookID := r.FormValue("book_id")
+	if !h.requireBookWriter(w, r, bookID) {
+		return
+	}
+	file, fileHeader, err := r.FormFile("file")
+	if err != nil {
+		sendError(w, http.StatusBadRequest, "file field required")
+		return
+	}
+	defer file.Close()
+	rawBytes, err := io.ReadAll(file)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "failed to read uploaded file: "+err.Error())
+		return
+	}
+
+	table, err := h.importService.ParseSuishoujiFile(rawBytes, fileHeader.Filename)
+	if err != nil {
+		sendError(w, http.StatusBadRequest, "failed to parse file: "+err.Error())
+		return
+	}
+	if len(table.Rows) > service.MaxSuishoujiRows {
+		sendError(w, http.StatusBadRequest, fmt.Sprintf("too many rows: %d (max %d per file, please split it)", len(table.Rows), service.MaxSuishoujiRows))
+		return
+	}
+
+	autoMapping := service.AutoMapColumns(table.Headers)
+	samples := table.Rows
+	if len(samples) > 5 {
+		samples = samples[:5]
+	}
+	aiSuggestions, aiAvailable, aiReason := map[string]string{}, false, ""
+	if h.aiSvc != nil {
+		uCtx := GetUserContext(r)
+		if sug, ok, reason := h.aiSvc.SuggestColumnMapping(r.Context(), uCtx.ID, table.Headers, samples); ok {
+			aiSuggestions, aiAvailable = sug, true
+		} else {
+			aiReason = reason
+		}
+	}
+
+	// 默认钱包：账本第一个可用钱包。
+	defaultWalletID, _ := h.importService.DefaultWalletID(r.Context(), bookID)
+	uCtx := GetUserContext(r)
+	preview := h.importService.BuildPreview(r.Context(), bookID, uCtx.ID, table, autoMapping, defaultWalletID, 10)
+
+	sendJSON(w, 0, http.StatusOK, "success", map[string]interface{}{
+		"headers":         table.Headers,
+		"total_rows":      len(table.Rows),
+		"rows":            table.Rows,
+		"samples":         samples,
+		"auto_mapping":    autoMapping,
+		"ai_available":    aiAvailable,
+		"ai_reason":       aiReason,
+		"ai_suggestions":  aiSuggestions,
+		"preview":         preview,
+		"default_wallet_id": defaultWalletID,
+	})
+}
+
+// PreviewSuishouji godoc
+// @Summary 按指定映射预览随手记导入前 10 行
+// @Description 用户改动字段映射后，用该映射重新解析前 10 行（含分类/钱包匹配结果）
+// @Tags Import & Export
+// @Accept json
+// @Produce json
+// @Param request body object true "预览请求体"
+// @Success 200 {object} Response{data=object} "预览结果"
+// @Router /api/v1/imports/suishouji/preview [post]
+// validateSuishoujiMapping 校验字段映射：日期和金额必须映射；
+// 日期/收支类型/金额/账户这几个单值字段不能被多列同时映射（否则取值有歧义）。
+func validateSuishoujiMapping(mapping map[string]service.ColumnTarget) error {
+	counts := make(map[service.ColumnTarget]int)
+	for _, t := range mapping {
+		counts[t]++
+	}
+	if counts[service.TargetDate] == 0 || counts[service.TargetAmount] == 0 {
+		return fmt.Errorf("mapping must include date and amount columns")
+	}
+	for _, t := range []service.ColumnTarget{
+		service.TargetDate, service.TargetType, service.TargetAmount, service.TargetWallet,
+	} {
+		if counts[t] > 1 {
+			return fmt.Errorf("target %q is mapped by %d columns", string(t), counts[t])
+		}
+	}
+	return nil
+}
+
+func (h *ImportExportHandler) PreviewSuishouji(w http.ResponseWriter, r *http.Request) {
+	uCtx := GetUserContext(r)
+	var req struct {
+		BookID          string                        `json:"book_id"`
+		Mapping         map[string]service.ColumnTarget `json:"mapping"`
+		DefaultWalletID string                        `json:"default_wallet_id"`
+		Headers         []string                      `json:"headers"`
+		Rows            [][]string                    `json:"rows"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if !h.requireBookWriter(w, r, req.BookID) {
+		return
+	}
+	if err := validateSuishoujiMapping(req.Mapping); err != nil {
+		sendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(req.Rows) > 10 {
+		req.Rows = req.Rows[:10]
+	}
+	table := &service.SuishoujiTable{Headers: req.Headers, Rows: req.Rows}
+	preview := h.importService.BuildPreview(r.Context(), req.BookID, uCtx.ID, table, req.Mapping, req.DefaultWalletID, 10)
+	sendJSON(w, 0, http.StatusOK, "success", map[string]interface{}{
+		"preview": preview,
+	})
+}
+
+// CommitSuishouji godoc
+// @Summary 确认导入随手记流水
+// @Description 按用户确认的字段映射把解析行批量写入账本（走正常记账路径），非法行记入失败明细不中断整批
+// @Tags Import & Export
+// @Accept json
+// @Produce json
+// @Param request body object true "导入请求体"
+// @Success 200 {object} Response "导入汇总"
+// @Failure 400 {object} Response "请求不合法"
+// @Failure 403 {object} Response "非账本成员"
+// @Router /api/v1/imports/suishouji/commit [post]
+func (h *ImportExportHandler) CommitSuishouji(w http.ResponseWriter, r *http.Request) {
+	uCtx := GetUserContext(r)
+	var req struct {
+		BookID          string                        `json:"book_id"`
+		Mapping         map[string]service.ColumnTarget `json:"mapping"`
+		DefaultWalletID string                        `json:"default_wallet_id"`
+		Headers         []string                      `json:"headers"`
+		Rows            [][]string                    `json:"rows"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if !h.requireBookWriter(w, r, req.BookID) {
+		return
+	}
+	if len(req.Rows) == 0 {
+		sendError(w, http.StatusBadRequest, "no rows to import")
+		return
+	}
+	if len(req.Rows) > service.MaxSuishoujiRows {
+		sendError(w, http.StatusBadRequest, fmt.Sprintf("too many rows: %d (max %d per file, please split it)", len(req.Rows), service.MaxSuishoujiRows))
+		return
+	}
+	if err := validateSuishoujiMapping(req.Mapping); err != nil {
+		sendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// 映射值合法性：只接受已知目标字段。
+	for _, t := range req.Mapping {
+		switch t {
+		case service.TargetDate, service.TargetType, service.TargetAmount,
+			service.TargetCategory, service.TargetSubCategory, service.TargetWallet,
+			service.TargetTitle, service.TargetNote, service.TargetTags, service.TargetIgnore:
+		default:
+			sendError(w, http.StatusBadRequest, fmt.Sprintf("invalid mapping target %q", string(t)))
+			return
+		}
+	}
+
+	table := &service.SuishoujiTable{Headers: req.Headers, Rows: req.Rows}
+	result, err := h.importService.CommitSuishouji(r.Context(), req.BookID, uCtx.ID, table, req.Mapping, req.DefaultWalletID)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if result.Inserted > 0 {
+		recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+			BookID:    req.BookID,
+			UserID:    uCtx.ID,
+			ActorName: uCtx.Name,
+			Action:    model.ActivityImportCommitted,
+			Summary:   fmt.Sprintf("从随手记导入了 %d 条流水", result.Inserted),
+		}, service.ChangeTransaction)
+		h.recorder.CheckBudgets(r.Context(), req.BookID)
+	}
+
+	sendJSON(w, 0, http.StatusOK, "success", map[string]interface{}{
+		"inserted":   result.Inserted,
+		"duplicates": result.Duplicates,
+		"failed":     result.Failed,
+		"failures":   result.Failures,
 	})
 }

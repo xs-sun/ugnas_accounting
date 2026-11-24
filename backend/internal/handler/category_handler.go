@@ -2,19 +2,23 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
 	"com.xsguyu.accounting/backend/internal/model"
 	"com.xsguyu.accounting/backend/internal/repository"
+	"com.xsguyu.accounting/backend/internal/service"
 )
 
 type CategoryHandler struct {
-	catRepo *repository.CategoryRepo
+	catRepo  *repository.CategoryRepo
+	hub      *service.Hub
+	recorder *service.ActivityRecorder
 }
 
-func NewCategoryHandler(catRepo *repository.CategoryRepo) *CategoryHandler {
-	return &CategoryHandler{catRepo: catRepo}
+func NewCategoryHandler(catRepo *repository.CategoryRepo, hub *service.Hub, recorder *service.ActivityRecorder) *CategoryHandler {
+	return &CategoryHandler{catRepo: catRepo, hub: hub, recorder: recorder}
 }
 
 func (h *CategoryHandler) ListCategories(w http.ResponseWriter, r *http.Request) {
@@ -32,6 +36,7 @@ func (h *CategoryHandler) ListCategories(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *CategoryHandler) CreateCategory(w http.ResponseWriter, r *http.Request) {
+	uCtx := GetUserContext(r)
 	var req struct {
 		ID        string  `json:"id"`
 		BookID    string  `json:"book_id"`
@@ -94,6 +99,13 @@ func (h *CategoryHandler) CreateCategory(w http.ResponseWriter, r *http.Request)
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:    req.BookID,
+		UserID:    uCtx.ID,
+		ActorName: uCtx.Name,
+		Action:    model.ActivityCategoryChanged,
+		Summary:   fmt.Sprintf("新增了分类「%s」", cat.Name),
+	}, service.ChangeCategory)
 
 	created, err := h.catRepo.GetCategory(r.Context(), cat.ID)
 	if err != nil {
@@ -104,6 +116,7 @@ func (h *CategoryHandler) CreateCategory(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *CategoryHandler) UpdateCategory(w http.ResponseWriter, r *http.Request, catID string) {
+	uCtx := GetUserContext(r)
 	cat, err := h.catRepo.GetCategory(r.Context(), catID)
 	if err != nil {
 		sendError(w, http.StatusNotFound, "category not found")
@@ -146,12 +159,25 @@ func (h *CategoryHandler) UpdateCategory(w http.ResponseWriter, r *http.Request,
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:    cat.BookID,
+		UserID:    uCtx.ID,
+		ActorName: uCtx.Name,
+		Action:    model.ActivityCategoryChanged,
+		Summary:   fmt.Sprintf("更新了分类「%s」", cat.Name),
+	}, service.ChangeCategory)
 
 	updated, _ := h.catRepo.GetCategory(r.Context(), catID)
 	sendJSON(w, 0, http.StatusOK, "success", updated)
 }
 
 func (h *CategoryHandler) DeleteCategory(w http.ResponseWriter, r *http.Request, catID string) {
+	uCtx := GetUserContext(r)
+	cat, err := h.catRepo.GetCategory(r.Context(), catID)
+	if err != nil {
+		sendError(w, http.StatusNotFound, "category not found")
+		return
+	}
 	if err := h.catRepo.DeleteCategory(r.Context(), catID); err != nil {
 		if err == repository.ErrNotFound {
 			sendError(w, http.StatusNotFound, "category not found")
@@ -160,6 +186,13 @@ func (h *CategoryHandler) DeleteCategory(w http.ResponseWriter, r *http.Request,
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:    cat.BookID,
+		UserID:    uCtx.ID,
+		ActorName: uCtx.Name,
+		Action:    model.ActivityCategoryChanged,
+		Summary:   fmt.Sprintf("删除了分类「%s」", cat.Name),
+	}, service.ChangeCategory)
 	sendJSON(w, 0, http.StatusOK, "success", nil)
 }
 

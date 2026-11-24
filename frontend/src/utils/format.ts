@@ -135,3 +135,18 @@ export function formatFileSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
+
+/** 动态时间：服务端本地时间 "YYYY-MM-DD HH:MM:SS" → 今天 HH:mm / 昨天 HH:mm / MM-DD HH:mm */
+export function formatActivityTime(createdAt: string): string {
+  if (!createdAt) return '';
+  const m = createdAt.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  if (!m) return createdAt;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]));
+  const hm = `${m[4]}:${m[5]}`;
+  const today = new Date();
+  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diffDays = Math.round((startOf(today) - startOf(d)) / 86400000);
+  if (diffDays <= 0) return `今天 ${hm}`;
+  if (diffDays === 1) return `昨天 ${hm}`;
+  return `${m[2]}-${m[3]} ${hm}`;
+}

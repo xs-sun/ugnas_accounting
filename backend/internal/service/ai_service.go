@@ -28,6 +28,7 @@ type AiService struct {
 	catRepo      *repository.CategoryRepo
 	walletRepo   *repository.WalletRepo
 	txRepo       *repository.TransactionRepo
+	budgetRepo   *repository.BudgetRepo
 	userRepo     *repository.UserRepo
 	settingsRepo *repository.SettingsRepo
 }
@@ -37,6 +38,7 @@ func NewAiService(
 	catRepo *repository.CategoryRepo,
 	walletRepo *repository.WalletRepo,
 	txRepo *repository.TransactionRepo,
+	budgetRepo *repository.BudgetRepo,
 	userRepo *repository.UserRepo,
 	settingsRepo *repository.SettingsRepo,
 ) *AiService {
@@ -45,6 +47,7 @@ func NewAiService(
 		catRepo:      catRepo,
 		walletRepo:   walletRepo,
 		txRepo:       txRepo,
+		budgetRepo:   budgetRepo,
 		userRepo:     userRepo,
 		settingsRepo: settingsRepo,
 	}
@@ -118,6 +121,22 @@ func (s *AiService) resolveBookID(ctx context.Context, userID, bookID string) st
 		return books[0].ID
 	}
 	return ""
+}
+
+// ensureBookMember：显式传入的账本若请求者不是成员，回落到用户自己的第一个账本，
+// 避免把其他账本的分类/钱包名泄露给模型（工具层的成员校验是第二道门）。
+func (s *AiService) ensureBookMember(ctx context.Context, userID, bookID string) string {
+	if bookID == "" {
+		return bookID
+	}
+	if _, err := s.bookRepo.GetMemberRole(ctx, bookID, userID); err == nil {
+		return bookID
+	}
+	books, err := s.bookRepo.ListBooks(ctx, userID)
+	if err == nil && len(books) > 0 {
+		return books[0].ID
+	}
+	return bookID
 }
 
 func (s *AiService) resolveCategoryMatch(ctx context.Context, bookID, txType, catHint, subHint string) (catID, catName, subName, icon, color, bgColor string) {
@@ -410,12 +429,23 @@ func (s *AiService) Chat(ctx context.Context, userID, bookID, message string, is
 	}
 
 	bookID = s.resolveBookID(ctx, userID, bookID)
+	bookID = s.ensureBookMember(ctx, userID, bookID)
 	msg := strings.TrimSpace(message)
 	var reply string
 	var draft *model.AiDraft
 	var inTok, outTok int64 = int64(len([]rune(msg))*2 + 260), 165
 
-	if rReply, rDraft, rIn, rOut, ok := s.buildRemoteChatPrompt(ctx, cfg, bookID, msg); ok {
+	// 优先走 Agent 工具循环（真正查数据库再回答）；模型不支持 tools 或调用失败时
+	// 自动退回原有行为：远程提示词 JSON 解析草稿 → 本地关键词兜底。
+	if aReply, aDraft, aIn, aOut, ok := s.runAgentChat(ctx, cfg, userID, bookID, msg); ok {
+		reply, draft = aReply, aDraft
+		if aIn > 0 {
+			inTok = aIn
+		}
+		if aOut > 0 {
+			outTok = aOut
+		}
+	} else if rReply, rDraft, rIn, rOut, ok := s.buildRemoteChatPrompt(ctx, cfg, bookID, msg); ok {
 		reply, draft = rReply, rDraft
 		if rIn > 0 {
 			inTok = rIn
@@ -850,6 +880,107 @@ func (s *AiService) TestConnection(ctx context.Context, baseURL, apiKey, modelNa
 		"model":      modelName,
 		"message":    fmt.Sprintf("远端返回 HTTP %d", resp.StatusCode),
 	}
+}
+
+// SuggestColumnMapping 用已配置的模型为导入表头建议字段映射。
+// 只建议、不决定：调用方把建议展示给用户，由用户确认。模型未配置、未启用、
+// 超限或调用失败时返回 available=false，调用方退回手动映射，不报错。
+func (s *AiService) SuggestColumnMapping(ctx context.Context, userID string, headers []string, samples [][]string) (map[string]string, bool, string) {
+	cfg, _, _, err := s.checkAiQuota(ctx, userID)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrAiDisabled):
+			return nil, false, "ai_disabled"
+		case errors.Is(err, ErrAiLimitExceed):
+			return nil, false, "ai_limit"
+		default:
+			return nil, false, "ai_unavailable"
+		}
+	}
+	if cfg == nil || strings.TrimSpace(cfg.APIKey) == "" || strings.TrimSpace(cfg.BaseURL) == "" || strings.HasPrefix(cfg.APIKey, "sk-cat7-") {
+		return nil, false, "ai_unconfigured"
+	}
+
+	sysPrompt := `你是记账导入助手。把电子表格的列名映射到记账字段，只返回 JSON，不要解释。
+目标字段：date（日期）、type（收支类型）、amount（金额）、category（一级分类）、subcategory（二级分类）、wallet（账户）、title（标题/商家）、note（备注）、tags（标签）、空字符串（忽略该列）。
+返回格式：{"mapping": {"<原列名>": "<目标字段>"}}，每个原列名都要出现在 mapping 里。`
+	sampleRows := samples
+	if len(sampleRows) > 3 {
+		sampleRows = sampleRows[:3]
+	}
+	userPayload, _ := json.Marshal(map[string]interface{}{
+		"headers": headers,
+		"samples": sampleRows,
+	})
+	reqPayload := map[string]interface{}{
+		"model":       cfg.Model,
+		"temperature": 0,
+		"messages": []map[string]string{
+			{"role": "system", "content": sysPrompt},
+			{"role": "user", "content": string(userPayload)},
+		},
+	}
+	bodyBytes, _ := json.Marshal(reqPayload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(cfg.BaseURL, "/")+"/chat/completions", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, false, "ai_request_failed"
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil || resp == nil {
+		return nil, false, "ai_request_failed"
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, false, "ai_request_failed"
+	}
+	var apiRes struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int64 `json:"prompt_tokens"`
+			CompletionTokens int64 `json:"completion_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&apiRes); err != nil || len(apiRes.Choices) == 0 {
+		return nil, false, "ai_bad_response"
+	}
+	content := strings.TrimSpace(apiRes.Choices[0].Message.Content)
+	content = strings.TrimPrefix(content, "```json")
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSuffix(content, "```")
+	content = strings.TrimSpace(content)
+	start := strings.Index(content, "{")
+	end := strings.LastIndex(content, "}")
+	if start < 0 || end <= start {
+		return nil, false, "ai_bad_response"
+	}
+	var parsed struct {
+		Mapping map[string]string `json:"mapping"`
+	}
+	if err := json.Unmarshal([]byte(content[start:end+1]), &parsed); err != nil || len(parsed.Mapping) == 0 {
+		return nil, false, "ai_bad_response"
+	}
+	allowed := map[string]bool{
+		"date": true, "type": true, "amount": true, "category": true,
+		"subcategory": true, "wallet": true, "title": true, "note": true,
+		"tags": true, "": true,
+	}
+	out := make(map[string]string, len(headers))
+	for _, h := range headers {
+		if v, ok := parsed.Mapping[h]; ok && allowed[v] {
+			out[h] = v
+		} else {
+			out[h] = ""
+		}
+	}
+	_ = s.settingsRepo.RecordAIUsage(ctx, userID, "import-mapping", cfg.Model, apiRes.Usage.PromptTokens, apiRes.Usage.CompletionTokens)
+	return out, true, ""
 }
 
 func maxInt64(a, b int64) int64 {

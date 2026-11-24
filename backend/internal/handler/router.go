@@ -30,6 +30,8 @@ type Router struct {
 	adminH     *AdminHandler
 	impExpH    *ImportExportHandler
 	snapshotH  *SnapshotHandler
+	streamH    *StreamHandler
+	activityH  *ActivityHandler
 	fileServer http.Handler
 }
 
@@ -48,6 +50,8 @@ func NewRouter(
 	adminH *AdminHandler,
 	impExpH *ImportExportHandler,
 	snapshotH *SnapshotHandler,
+	streamH *StreamHandler,
+	activityH *ActivityHandler,
 ) *Router {
 	return &Router{
 		cfg:        cfg,
@@ -64,6 +68,8 @@ func NewRouter(
 		adminH:     adminH,
 		impExpH:    impExpH,
 		snapshotH:  snapshotH,
+		streamH:    streamH,
+		activityH:  activityH,
 		fileServer: http.FileServer(http.Dir(cfg.StaticDir)),
 	}
 }
@@ -73,6 +79,7 @@ var (
 	reBookMembers        = regexp.MustCompile(`^/api/v1/books/([^/]+)/members$`)
 	reBookInviteEmail    = regexp.MustCompile(`^/api/v1/books/([^/]+)/invite-email$`)
 	reBookVirtualMembers = regexp.MustCompile(`^/api/v1/books/([^/]+)/virtual-members$`)
+	reBookActivities     = regexp.MustCompile(`^/api/v1/books/([^/]+)/activities$`)
 	reBookItem           = regexp.MustCompile(`^/api/v1/books/([^/]+)$`)
 
 	reWalletItem   = regexp.MustCompile(`^/api/v1/wallets/([^/]+)$`)
@@ -118,6 +125,15 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Health & Auth & Avatars
+	if path == "/api/v1/stream" {
+		if r.Method == http.MethodGet {
+			rt.streamH.Stream(w, r)
+		} else {
+			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		}
+		return
+	}
+
 	if path == "/api/v1/health" || path == "/health" {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
@@ -260,6 +276,15 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if m := reBookVirtualMembers.FindStringSubmatch(path); len(m) > 1 {
 		if r.Method == http.MethodPost {
 			rt.bookH.AddVirtualMember(w, r, m[1])
+		} else {
+			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		}
+		return
+	}
+
+	if m := reBookActivities.FindStringSubmatch(path); len(m) > 1 {
+		if r.Method == http.MethodGet {
+			rt.activityH.ListActivities(w, r, m[1])
 		} else {
 			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
 		}
@@ -657,6 +682,33 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if path == "/api/v1/imports/commit" {
 		if r.Method == http.MethodPost {
 			rt.impExpH.CommitImport(w, r)
+		} else {
+			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		}
+		return
+	}
+
+	if path == "/api/v1/imports/suishouji/parse" {
+		if r.Method == http.MethodPost {
+			rt.impExpH.ParseSuishouji(w, r)
+		} else {
+			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		}
+		return
+	}
+
+	if path == "/api/v1/imports/suishouji/preview" {
+		if r.Method == http.MethodPost {
+			rt.impExpH.PreviewSuishouji(w, r)
+		} else {
+			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		}
+		return
+	}
+
+	if path == "/api/v1/imports/suishouji/commit" {
+		if r.Method == http.MethodPost {
+			rt.impExpH.CommitSuishouji(w, r)
 		} else {
 			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
 		}

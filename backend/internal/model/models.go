@@ -239,6 +239,31 @@ type StatsReport struct {
 	TopTransactions []Transaction       `json:"top_transactions"`
 }
 
+// RangeStats 是 Agent query_stats 工具的返回结构：任意起止日期区间的汇总。
+type RangeMonthItem struct {
+	Month   string `json:"month"`
+	Expense int64  `json:"expense"`
+	Income  int64  `json:"income"`
+}
+
+type RangeStats struct {
+	StartDate    string              `json:"start_date"`
+	EndDate      string              `json:"end_date"`
+	TotalExpense int64               `json:"total_expense"`
+	TotalIncome  int64               `json:"total_income"`
+	NetSavings   int64               `json:"net_savings"`
+	Categories   []StatsCategoryItem `json:"categories"`
+	Monthly      []RangeMonthItem    `json:"monthly"`
+}
+
+// MemberTotal 是某成员在一段时间内的收支合计。
+type MemberTotal struct {
+	UserID  string `json:"user_id"`
+	Expense int64  `json:"expense"`
+	Income  int64  `json:"income"`
+	Count   int    `json:"count"`
+}
+
 type CategoryBudgetItem struct {
 	CategoryID      string `json:"category_id"`
 	CategoryName    string `json:"category_name"`
@@ -427,3 +452,36 @@ type ApiResponse struct {
 	Message string      `json:"message"`
 	Data    interface{} `json:"data,omitempty"`
 }
+
+// BookActivity 是账本动态的一条记录：谁、在哪个账本、干了什么。
+// Summary 是展示给成员看的一句话（如“记了一笔午餐 ¥32.00”）；
+// AmountCents/TxID 仅交易类动态有值。
+type BookActivity struct {
+	ID          string  `json:"id"`
+	BookID      string  `json:"book_id"`
+	UserID      string  `json:"user_id"`
+	ActorName   string  `json:"actor_name"`
+	Action      string  `json:"action"`
+	Summary     string  `json:"summary"`
+	AmountCents *int64  `json:"amount_cents,omitempty"`
+	TxID        *string `json:"tx_id,omitempty"`
+	CreatedAt   string  `json:"created_at"`
+}
+
+// 动态 action 取值（与 budget-alert 共用同一张表）。
+const (
+	ActivityTxCreated        = "transaction_created"
+	ActivityTxUpdated        = "transaction_updated"
+	ActivityTxDeleted        = "transaction_deleted"
+	ActivityImportCommitted  = "import_committed"
+	ActivityRecurringPosted  = "recurring_posted"
+	ActivityRecurringChanged = "recurring_changed"
+	ActivityWalletChanged    = "wallet_changed"
+	ActivityBudgetChanged    = "budget_changed"
+	ActivityCategoryChanged  = "category_changed"
+	ActivityMemberJoined     = "member_joined"
+	ActivityMemberRemoved    = "member_removed"
+	ActivityBookRenamed      = "book_renamed"
+	ActivityBookUpdated      = "book_updated"
+	ActivityBudgetAlert      = "budget_alert"
+)

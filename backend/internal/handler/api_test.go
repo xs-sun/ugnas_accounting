@@ -22,20 +22,24 @@ import (
 )
 
 type testEnv struct {
-	db                  *repository.DB
-	dataDir             string
-	handler             http.Handler
-	bookRepo            *repository.BookRepo
-	walletRepo          *repository.WalletRepo
-	catRepo             *repository.CategoryRepo
-	txRepo              *repository.TransactionRepo
-	userRepo            *repository.UserRepo
-	budgetRepo          *repository.BudgetRepo
-	recurringRepo       *repository.RecurringRepo
-	settingsRepo        *repository.SettingsRepo
-	authSvc             *service.AuthService
-	recurringScheduler  *service.RecurringScheduler
-	autoBackupScheduler *service.AutoBackupScheduler
+	db                   *repository.DB
+	dataDir              string
+	handler              http.Handler
+	bookRepo             *repository.BookRepo
+	walletRepo           *repository.WalletRepo
+	catRepo              *repository.CategoryRepo
+	txRepo               *repository.TransactionRepo
+	userRepo             *repository.UserRepo
+	budgetRepo           *repository.BudgetRepo
+	recurringRepo        *repository.RecurringRepo
+	settingsRepo         *repository.SettingsRepo
+	activityRepo         *repository.ActivityRepo
+	authSvc              *service.AuthService
+	recorder             *service.ActivityRecorder
+	hub                  *service.Hub
+	recurringScheduler   *service.RecurringScheduler
+	budgetAlertScheduler *service.BudgetAlertScheduler
+	autoBackupScheduler  *service.AutoBackupScheduler
 }
 
 func setupTestEnv(t *testing.T) *testEnv {
@@ -60,48 +64,58 @@ func setupTestEnv(t *testing.T) *testEnv {
 	settingsRepo := repository.NewSettingsRepo(db, dataDir)
 
 	snapshotSvc := service.NewSnapshotService(db, snapshotRepo, dataDir)
-	importSvc := service.NewImportService(db)
+	importSvc := service.NewImportService(db, txRepo, catRepo, walletRepo)
 	exportSvc := service.NewExportService(db)
 	authSvc := service.NewAuthService(userRepo, settingsRepo)
-	aiSvc := service.NewAiService(bookRepo, catRepo, walletRepo, txRepo, userRepo, settingsRepo)
-	recSched := service.NewRecurringScheduler(recurringRepo, txRepo)
+	aiSvc := service.NewAiService(bookRepo, catRepo, walletRepo, txRepo, budgetRepo, userRepo, settingsRepo)
+	activityRepo := repository.NewActivityRepo(db)
+	hub := service.NewHub()
+	recorder := service.NewActivityRecorder(activityRepo, budgetRepo, hub)
+	recSched := service.NewRecurringScheduler(recurringRepo, txRepo, hub, recorder)
+	budgetAlertSched := service.NewBudgetAlertScheduler(recorder)
 	bakSched := service.NewAutoBackupScheduler(snapshotSvc, settingsRepo)
 
 	authH := NewAuthHandler(userRepo, bookRepo, walletRepo, settingsRepo, authSvc)
 	userH := NewUserHandler(bookRepo, walletRepo, txRepo, userRepo, settingsRepo, dataDir)
-	bookH := NewBookHandler(bookRepo, userRepo, authSvc)
-	walletH := NewWalletHandler(walletRepo, bookRepo)
-	catH := NewCategoryHandler(catRepo)
-	txH := NewTransactionHandler(txRepo, bookRepo, walletRepo, dataDir)
+	bookH := NewBookHandler(bookRepo, userRepo, authSvc, hub, recorder)
+	walletH := NewWalletHandler(walletRepo, bookRepo, hub, recorder)
+	catH := NewCategoryHandler(catRepo, hub, recorder)
+	txH := NewTransactionHandler(txRepo, bookRepo, walletRepo, dataDir, hub, recorder)
 	reportH := NewReportHandler(txRepo)
-	budgetH := NewBudgetHandler(budgetRepo, bookRepo)
-	recH := NewRecurringHandler(recurringRepo)
+	budgetH := NewBudgetHandler(budgetRepo, bookRepo, hub, recorder)
+	recH := NewRecurringHandler(recurringRepo, hub, recorder)
 	aiH := NewAiHandler(aiSvc)
 	adminH := NewAdminHandler(settingsRepo, userRepo, authSvc)
-	impExpH := NewImportExportHandler(importSvc, exportSvc)
+	impExpH := NewImportExportHandler(importSvc, exportSvc, hub, recorder, aiSvc, bookRepo)
 	snapH := NewSnapshotHandler(snapshotSvc)
+	streamH := NewStreamHandler(hub, bookRepo, userRepo, authSvc)
+	activityH := NewActivityHandler(activityRepo, bookRepo)
 
 	router := NewRouter(
-		RouterConfig{AppID: "com.xsguyu.accounting", Version: "0.2.0", StaticDir: filepath.Join(dataDir, "nonexistent_www")},
-		authH, userH, bookH, walletH, catH, txH, reportH, budgetH, recH, aiH, adminH, impExpH, snapH,
+		RouterConfig{AppID: "com.xsguyu.accounting", Version: "0.3.0", StaticDir: filepath.Join(dataDir, "nonexistent_www")},
+		authH, userH, bookH, walletH, catH, txH, reportH, budgetH, recH, aiH, adminH, impExpH, snapH, streamH, activityH,
 	)
 
 	chain := CORSMiddleware(NewAuthMiddleware(userRepo, authSvc)(router))
 	return &testEnv{
-		db:                  db,
-		dataDir:             dataDir,
-		handler:             chain,
-		bookRepo:            bookRepo,
-		walletRepo:          walletRepo,
-		catRepo:             catRepo,
-		txRepo:              txRepo,
-		userRepo:            userRepo,
-		budgetRepo:          budgetRepo,
-		recurringRepo:       recurringRepo,
-		settingsRepo:        settingsRepo,
-		authSvc:             authSvc,
-		recurringScheduler:  recSched,
-		autoBackupScheduler: bakSched,
+		db:                   db,
+		dataDir:              dataDir,
+		handler:              chain,
+		bookRepo:             bookRepo,
+		walletRepo:           walletRepo,
+		catRepo:              catRepo,
+		txRepo:               txRepo,
+		userRepo:             userRepo,
+		budgetRepo:           budgetRepo,
+		recurringRepo:        recurringRepo,
+		settingsRepo:         settingsRepo,
+		activityRepo:         activityRepo,
+		authSvc:              authSvc,
+		recorder:             recorder,
+		hub:                  hub,
+		recurringScheduler:   recSched,
+		budgetAlertScheduler: budgetAlertSched,
+		autoBackupScheduler:  bakSched,
 	}
 }
 
@@ -185,14 +199,14 @@ func TestSchemaMigrationIdempotency(t *testing.T) {
 func TestAuthAndUserLifecycle(t *testing.T) {
 	env := setupTestEnv(t)
 
-	// Health check returns v0.2.0
+	// Health check returns v0.3.0
 	rr, resp := doJSONReq(t, env.handler, http.MethodGet, "/api/v1/health", nil, nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("health status %d", rr.Code)
 	}
 	data := resp["data"].(map[string]interface{})
-	if data["version"] != "0.2.0" {
-		t.Fatalf("expected version 0.2.0, got %v", data["version"])
+	if data["version"] != "0.3.0" {
+		t.Fatalf("expected version 0.3.0, got %v", data["version"])
 	}
 
 	// Send verification code for register

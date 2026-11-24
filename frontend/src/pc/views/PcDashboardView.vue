@@ -2,7 +2,7 @@
 import { ref, computed, watch } from 'vue';
 import { api } from '@/api/client';
 import { useAppStore } from '@/stores/useAppStore';
-import { formatMoney } from '@/utils/format';
+import { formatMoney, formatActivityTime } from '@/utils/format';
 import type { MonthlyReport, Transaction } from '@/types';
 import type { PcViewId } from '@/pc/utils/adminAdapter';
 import DonutChart from '@/components/shared/DonutChart.vue';
@@ -94,6 +94,21 @@ const budgetPercent = computed<number>(() => {
   if (budgetLimit.value <= 0) return 0;
   return Math.round((budgetSpent.value / budgetLimit.value) * 100);
 });
+
+// 预算提醒文案（store.latestBudgetAlert 由 SSE budget-alert 事件写入）。
+const budgetAlertText = computed(() => {
+  const alert = store.latestBudgetAlert;
+  if (!alert) return '';
+  return `${alert.budgetName}预算已使用 ${alert.level}%（${formatMoney(alert.used)} / ${formatMoney(alert.budget)}）`;
+});
+
+// 动态行左侧圆点颜色：交易琥珀、预算提醒红、成员绿、其他灰。
+function activityColor(action: string): string {
+  if (action === 'budget_alert') return '#D6553E';
+  if (action.startsWith('transaction') || action === 'import_committed' || action === 'recurring_posted') return '#DE8A1E';
+  if (action.startsWith('member')) return '#3E8E63';
+  return '#94A3B8';
+}
 
 const trendItems = computed<TrendBarItem[]>(() => {
   const daysInMonth = new Date(store.currentYear, store.currentMonth, 0).getDate();
@@ -378,6 +393,24 @@ function handleSelectTrendBar(item: TrendBarItem) {
             height-class="h-2.5"
           />
 
+          <!-- 预算提醒：SSE budget-alert 到达时出现，可关闭 -->
+          <div
+            v-if="store.latestBudgetAlert"
+            class="flex items-center gap-2 rounded-xl bg-[#FDF1EE] border border-[#F6D9D2] px-3 py-2"
+          >
+            <span class="text-sm shrink-0">⚠️</span>
+            <p class="flex-1 min-w-0 text-xs font-medium text-[#7A2E1D] truncate">
+              {{ budgetAlertText }}
+            </p>
+            <button
+              type="button"
+              class="text-[#94A3B8] hover:text-[#18181B] text-xs shrink-0 px-1"
+              @click="store.dismissBudgetAlert()"
+            >
+              ✕
+            </button>
+          </div>
+
           <div class="pt-3 border-t border-[#F1F3F6] grid grid-cols-2 gap-3 text-xs">
             <div class="p-3 rounded-2xl bg-[#FAFBFD] border border-[#EAECEF]">
               <p class="text-[10px] text-[#94A3B8]">本月剩余天数</p>
@@ -392,6 +425,45 @@ function handleSelectTrendBar(item: TrendBarItem) {
               </p>
             </div>
           </div>
+        </div>
+
+        <!-- 账本动态：谁干了什么，按时间倒序；SSE 到达时自动刷新 -->
+        <div class="pc-card p-5 space-y-3">
+          <div class="flex items-center justify-between gap-2">
+            <h2 class="text-sm font-bold text-[#18181B]">账本动态</h2>
+            <span class="text-[11px] text-[#94A3B8]">{{ store.activities.length }} 条</span>
+          </div>
+          <div v-if="store.activities.length === 0" class="py-4 text-center text-xs text-[#94A3B8]">
+            还没有动态，记一笔就出现在这里
+          </div>
+          <ul v-else class="divide-y divide-[#F1F3F6]">
+            <li
+              v-for="a in store.activities"
+              :key="a.id"
+              class="py-2.5 flex items-start gap-2.5 first:pt-0 last:pb-0"
+            >
+              <span
+                class="mt-1.5 w-2 h-2 rounded-full shrink-0"
+                :style="{ backgroundColor: activityColor(a.action) }"
+              />
+              <div class="flex-1 min-w-0">
+                <p class="text-xs text-[#27272A] leading-5">
+                  <span class="font-semibold">{{ a.actor_name }}</span>
+                  {{ a.summary }}
+                </p>
+                <p class="text-[10px] text-[#94A3B8] mt-0.5">{{ formatActivityTime(a.created_at) }}</p>
+              </div>
+            </li>
+          </ul>
+          <button
+            v-if="store.activitiesHasMore"
+            type="button"
+            class="w-full py-2 text-xs font-semibold text-[#DE8A1E] border-t border-[#F1F3F6] hover:bg-[#FFF6E8] rounded-b-xl transition disabled:opacity-60"
+            :disabled="store.activitiesLoading"
+            @click="store.loadMoreActivities()"
+          >
+            {{ store.activitiesLoading ? '加载中…' : '加载更多' }}
+          </button>
         </div>
 
         <!-- 快捷 AI 记账迷你面板 -->

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -13,10 +14,12 @@ import (
 
 type RecurringHandler struct {
 	recurringRepo *repository.RecurringRepo
+	hub           *service.Hub
+	recorder      *service.ActivityRecorder
 }
 
-func NewRecurringHandler(recurringRepo *repository.RecurringRepo) *RecurringHandler {
-	return &RecurringHandler{recurringRepo: recurringRepo}
+func NewRecurringHandler(recurringRepo *repository.RecurringRepo, hub *service.Hub, recorder *service.ActivityRecorder) *RecurringHandler {
+	return &RecurringHandler{recurringRepo: recurringRepo, hub: hub, recorder: recorder}
 }
 
 func (h *RecurringHandler) ListRules(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +105,13 @@ func (h *RecurringHandler) CreateRule(w http.ResponseWriter, r *http.Request) {
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:    req.BookID,
+		UserID:    uCtx.ID,
+		ActorName: uCtx.Name,
+		Action:    model.ActivityRecurringChanged,
+		Summary:   fmt.Sprintf("新增了定时记账「%s」%s", rr.Title, service.FormatYuan(rr.Amount)),
+	}, service.ChangeRecurring)
 	created, err := h.recurringRepo.GetRule(r.Context(), rr.ID)
 	if err != nil {
 		sendJSON(w, 0, http.StatusCreated, "success", rr)
@@ -111,6 +121,7 @@ func (h *RecurringHandler) CreateRule(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *RecurringHandler) UpdateRule(w http.ResponseWriter, r *http.Request, id string) {
+	uCtx := GetUserContext(r)
 	rr, err := h.recurringRepo.GetRule(r.Context(), id)
 	if err != nil {
 		sendError(w, http.StatusNotFound, "recurring rule not found")
@@ -177,11 +188,24 @@ func (h *RecurringHandler) UpdateRule(w http.ResponseWriter, r *http.Request, id
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:    rr.BookID,
+		UserID:    uCtx.ID,
+		ActorName: uCtx.Name,
+		Action:    model.ActivityRecurringChanged,
+		Summary:   fmt.Sprintf("更新了定时记账「%s」%s", rr.Title, service.FormatYuan(rr.Amount)),
+	}, service.ChangeRecurring)
 	updated, _ := h.recurringRepo.GetRule(r.Context(), id)
 	sendJSON(w, 0, http.StatusOK, "success", updated)
 }
 
 func (h *RecurringHandler) DeleteRule(w http.ResponseWriter, r *http.Request, id string) {
+	uCtx := GetUserContext(r)
+	rr, err := h.recurringRepo.GetRule(r.Context(), id)
+	if err != nil {
+		sendError(w, http.StatusNotFound, "recurring rule not found")
+		return
+	}
 	if err := h.recurringRepo.DeleteRule(r.Context(), id); err != nil {
 		if err == repository.ErrNotFound {
 			sendError(w, http.StatusNotFound, "recurring rule not found")
@@ -190,10 +214,18 @@ func (h *RecurringHandler) DeleteRule(w http.ResponseWriter, r *http.Request, id
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:    rr.BookID,
+		UserID:    uCtx.ID,
+		ActorName: uCtx.Name,
+		Action:    model.ActivityRecurringChanged,
+		Summary:   fmt.Sprintf("删除了定时记账「%s」", rr.Title),
+	}, service.ChangeRecurring)
 	sendJSON(w, 0, http.StatusOK, "success", nil)
 }
 
 func (h *RecurringHandler) ToggleRule(w http.ResponseWriter, r *http.Request, id string) {
+	uCtx := GetUserContext(r)
 	updated, err := h.recurringRepo.ToggleRule(r.Context(), id)
 	if err != nil {
 		if err == repository.ErrNotFound {
@@ -203,5 +235,16 @@ func (h *RecurringHandler) ToggleRule(w http.ResponseWriter, r *http.Request, id
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	verb := "暂停了"
+	if updated.IsActive {
+		verb = "开启了"
+	}
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:    updated.BookID,
+		UserID:    uCtx.ID,
+		ActorName: uCtx.Name,
+		Action:    model.ActivityRecurringChanged,
+		Summary:   fmt.Sprintf("%s定时记账「%s」", verb, updated.Title),
+	}, service.ChangeRecurring)
 	sendJSON(w, 0, http.StatusOK, "success", updated)
 }

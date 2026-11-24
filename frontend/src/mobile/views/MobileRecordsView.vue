@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue';
 import { useAppStore } from '@/stores/useAppStore';
 import { DEFAULT_MASCOT, MASCOT_FALLBACK, resolveAvatarUrl } from '@/constants/avatars';
-import { formatMoney, getWeekdayLabel } from '@/utils/format';
+import { formatMoney, formatActivityTime, getWeekdayLabel } from '@/utils/format';
 import type { BookMember, Transaction } from '@/types';
 import type { InviteSheetView, RecordInitialMode } from '../types';
 import BudgetProgressBar from '@/components/shared/BudgetProgressBar.vue';
@@ -28,6 +28,21 @@ const emit = defineEmits<{
 
 const store = useAppStore();
 const selectedCategoryId = ref<string>('all');
+
+// 预算提醒文案（store.latestBudgetAlert 由 SSE budget-alert 事件写入）。
+const budgetAlertText = computed(() => {
+  const alert = store.latestBudgetAlert;
+  if (!alert) return '';
+  return `${alert.budgetName}预算已使用 ${alert.level}%（${formatMoney(alert.used)} / ${formatMoney(alert.budget)}）`;
+});
+
+// 动态行左侧圆点颜色：交易琥珀、预算提醒红、成员绿、其他灰。
+function activityColor(action: string): string {
+  if (action === 'budget_alert') return '#D6553E';
+  if (action.startsWith('transaction') || action === 'import_committed' || action === 'recurring_posted') return '#DE8A1E';
+  if (action.startsWith('member')) return '#3E8E63';
+  return '#94A3B8';
+}
 
 const monthPrefix = computed(
   () => `${store.currentYear}-${String(store.currentMonth).padStart(2, '0')}-`
@@ -423,6 +438,24 @@ function onMascotError(e: Event) {
       </div>
     </section>
 
+    <!-- 预算提醒横条（SSE budget-alert 到达时出现，可关闭） -->
+    <div
+      v-if="store.latestBudgetAlert"
+      class="app-card px-3.5 py-2.5 flex items-center gap-2.5 bg-[#FDF1EE] border-[#F6D9D2]"
+    >
+      <span class="text-sm shrink-0">⚠️</span>
+      <p class="flex-1 min-w-0 text-xs font-medium text-[#7A2E1D] truncate">
+        {{ budgetAlertText }}
+      </p>
+      <button
+        type="button"
+        class="text-[#94A3B8] hover:text-[#18181B] text-xs shrink-0 px-1"
+        @click="store.dismissBudgetAlert()"
+      >
+        ✕
+      </button>
+    </div>
+
     <!-- 七猫 AI 快捷记账入口条 -->
     <button
       type="button"
@@ -530,5 +563,40 @@ function onMascotError(e: Event) {
         </div>
       </section>
     </template>
+
+    <!-- 账本动态：谁干了什么，按时间倒序；SSE 到达时自动刷新 -->
+    <section class="app-card overflow-hidden">
+      <div class="px-4 py-3 flex items-center justify-between border-b border-[#F1F3F6]">
+        <h3 class="text-sm font-bold text-[#18181B]">账本动态</h3>
+        <span class="text-[11px] text-[#94A3B8]">{{ store.activities.length }} 条</span>
+      </div>
+      <div v-if="store.activities.length === 0" class="px-4 py-6 text-center text-xs text-[#94A3B8]">
+        还没有动态，记一笔就出现在这里
+      </div>
+      <ul v-else class="divide-y divide-[#F1F3F6]">
+        <li v-for="a in store.activities" :key="a.id" class="px-4 py-2.5 flex items-start gap-2.5">
+          <span
+            class="mt-1.5 w-2 h-2 rounded-full shrink-0"
+            :style="{ backgroundColor: activityColor(a.action) }"
+          />
+          <div class="flex-1 min-w-0">
+            <p class="text-xs text-[#27272A] leading-5">
+              <span class="font-semibold">{{ a.actor_name }}</span>
+              {{ a.summary }}
+            </p>
+            <p class="text-[10px] text-[#94A3B8] mt-0.5">{{ formatActivityTime(a.created_at) }}</p>
+          </div>
+        </li>
+      </ul>
+      <button
+        v-if="store.activitiesHasMore"
+        type="button"
+        class="w-full py-2.5 text-xs font-semibold text-[#DE8A1E] border-t border-[#F1F3F6] hover:bg-[#FFF6E8] transition disabled:opacity-60"
+        :disabled="store.activitiesLoading"
+        @click="store.loadMoreActivities()"
+      >
+        {{ store.activitiesLoading ? '加载中…' : '加载更多' }}
+      </button>
+    </section>
   </div>
 </template>

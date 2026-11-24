@@ -2,23 +2,30 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"com.xsguyu.accounting/backend/internal/model"
 	"com.xsguyu.accounting/backend/internal/repository"
+	"com.xsguyu.accounting/backend/internal/service"
 )
 
 type BudgetHandler struct {
 	budgetRepo *repository.BudgetRepo
 	bookRepo   *repository.BookRepo
+	hub        *service.Hub
+	recorder   *service.ActivityRecorder
 }
 
-func NewBudgetHandler(budgetRepo *repository.BudgetRepo, bookRepo *repository.BookRepo) *BudgetHandler {
+func NewBudgetHandler(budgetRepo *repository.BudgetRepo, bookRepo *repository.BookRepo, hub *service.Hub, recorder *service.ActivityRecorder) *BudgetHandler {
 	return &BudgetHandler{
 		budgetRepo: budgetRepo,
 		bookRepo:   bookRepo,
+		hub:        hub,
+		recorder:   recorder,
 	}
 }
 
@@ -56,6 +63,7 @@ func (h *BudgetHandler) GetBudgets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *BudgetHandler) UpdateTotalBudget(w http.ResponseWriter, r *http.Request) {
+	uCtx := GetUserContext(r)
 	var req struct {
 		BookID string `json:"book_id"`
 		Budget int64  `json:"budget"`
@@ -77,17 +85,26 @@ func (h *BudgetHandler) UpdateTotalBudget(w http.ResponseWriter, r *http.Request
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
 	now := time.Now()
 	ov, err := h.budgetRepo.GetBudgetOverview(r.Context(), req.BookID, now.Year(), int(now.Month()))
 	if err != nil {
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:    req.BookID,
+		UserID:    uCtx.ID,
+		ActorName: uCtx.Name,
+		Action:    model.ActivityBudgetChanged,
+		Summary:   fmt.Sprintf("把月预算调整为 %s", service.FormatYuan(req.Budget)),
+	}, service.ChangeBudget)
+	// 上限调低可能让当月已花金额直接越线，立即检查一次。
+	h.recorder.CheckBudgets(r.Context(), req.BookID)
 	sendJSON(w, 0, http.StatusOK, "success", ov)
 }
 
 func (h *BudgetHandler) UpdateCategoryBudget(w http.ResponseWriter, r *http.Request) {
+	uCtx := GetUserContext(r)
 	var req struct {
 		BookID      string `json:"book_id"`
 		CategoryID  string `json:"category_id"`
@@ -113,5 +130,21 @@ func (h *BudgetHandler) UpdateCategoryBudget(w http.ResponseWriter, r *http.Requ
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	catName := req.CategoryID
+	for _, c := range ov.Categories {
+		if c.CategoryID == req.CategoryID {
+			catName = c.CategoryName
+			break
+		}
+	}
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:    req.BookID,
+		UserID:    uCtx.ID,
+		ActorName: uCtx.Name,
+		Action:    model.ActivityBudgetChanged,
+		Summary:   fmt.Sprintf("把「%s」的预算上限调整为 %s", catName, service.FormatYuan(req.LimitAmount)),
+	}, service.ChangeBudget)
+	// 上限调低可能让当月已花金额直接越线，立即检查一次。
+	h.recorder.CheckBudgets(r.Context(), req.BookID)
 	sendJSON(w, 0, http.StatusOK, "success", ov)
 }

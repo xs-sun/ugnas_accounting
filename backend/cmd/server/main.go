@@ -24,7 +24,7 @@ import (
 
 const (
 	AppID   = "com.xsguyu.accounting"
-	Version = "0.2.0"
+	Version = "0.3.0"
 )
 
 func isDir(p string) bool {
@@ -185,27 +185,34 @@ func main() {
 
 	// Initialize Services
 	snapshotService := service.NewSnapshotService(db, snapshotRepo, dataDir)
-	importService := service.NewImportService(db)
+	importService := service.NewImportService(db, txRepo, catRepo, walletRepo)
 	exportService := service.NewExportService(db)
 	authService := service.NewAuthService(userRepo, settingsRepo)
-	aiService := service.NewAiService(bookRepo, catRepo, walletRepo, txRepo, userRepo, settingsRepo)
-	recurringScheduler := service.NewRecurringScheduler(recurringRepo, txRepo)
+	aiService := service.NewAiService(bookRepo, catRepo, walletRepo, txRepo, budgetRepo, userRepo, settingsRepo)
+	// SSE 实时同步的进程内订阅中心（单进程常驻，即时直推，无外部组件）。
+	hub := service.NewHub()
+	activityRepo := repository.NewActivityRepo(db)
+	activityRecorder := service.NewActivityRecorder(activityRepo, budgetRepo, hub)
+	recurringScheduler := service.NewRecurringScheduler(recurringRepo, txRepo, hub, activityRecorder)
+	budgetAlertScheduler := service.NewBudgetAlertScheduler(activityRecorder)
 	autoBackupScheduler := service.NewAutoBackupScheduler(snapshotService, settingsRepo)
 
 	// Initialize Handlers
 	authHandler := handler.NewAuthHandler(userRepo, bookRepo, walletRepo, settingsRepo, authService)
 	userHandler := handler.NewUserHandler(bookRepo, walletRepo, txRepo, userRepo, settingsRepo, dataDir)
-	bookHandler := handler.NewBookHandler(bookRepo, userRepo, authService)
-	walletHandler := handler.NewWalletHandler(walletRepo, bookRepo)
-	catHandler := handler.NewCategoryHandler(catRepo)
-	txHandler := handler.NewTransactionHandler(txRepo, bookRepo, walletRepo, dataDir)
+	bookHandler := handler.NewBookHandler(bookRepo, userRepo, authService, hub, activityRecorder)
+	walletHandler := handler.NewWalletHandler(walletRepo, bookRepo, hub, activityRecorder)
+	catHandler := handler.NewCategoryHandler(catRepo, hub, activityRecorder)
+	txHandler := handler.NewTransactionHandler(txRepo, bookRepo, walletRepo, dataDir, hub, activityRecorder)
 	reportHandler := handler.NewReportHandler(txRepo)
-	budgetHandler := handler.NewBudgetHandler(budgetRepo, bookRepo)
-	recurringHandler := handler.NewRecurringHandler(recurringRepo)
+	budgetHandler := handler.NewBudgetHandler(budgetRepo, bookRepo, hub, activityRecorder)
+	recurringHandler := handler.NewRecurringHandler(recurringRepo, hub, activityRecorder)
 	aiHandler := handler.NewAiHandler(aiService)
 	adminHandler := handler.NewAdminHandler(settingsRepo, userRepo, authService)
-	impExpHandler := handler.NewImportExportHandler(importService, exportService)
+	impExpHandler := handler.NewImportExportHandler(importService, exportService, hub, activityRecorder, aiService, bookRepo)
 	snapshotHandler := handler.NewSnapshotHandler(snapshotService)
+	streamHandler := handler.NewStreamHandler(hub, bookRepo, userRepo, authService)
+	activityHandler := handler.NewActivityHandler(activityRepo, bookRepo)
 
 	routerConfig := handler.RouterConfig{
 		AppID:     AppID,
@@ -228,6 +235,8 @@ func main() {
 		adminHandler,
 		impExpHandler,
 		snapshotHandler,
+		streamHandler,
+		activityHandler,
 	)
 
 	authMiddleware := handler.NewAuthMiddleware(userRepo, authService)
@@ -253,6 +262,7 @@ func main() {
 
 	// Start background schedulers
 	recurringScheduler.Start(ctx)
+	budgetAlertScheduler.Start(ctx)
 	autoBackupScheduler.Start(ctx)
 
 	go func() {

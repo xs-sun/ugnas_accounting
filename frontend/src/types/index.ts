@@ -300,6 +300,37 @@ export interface BudgetOverview {
   categories: CategoryBudgetItem[];
 }
 
+// ==================== Book Activities ====================
+
+export interface BookActivity {
+  id: string;
+  book_id: string;
+  user_id: string;
+  actor_name: string;
+  action: string;
+  summary: string;
+  amount_cents?: number | null;
+  tx_id?: string | null;
+  created_at: string; // 服务端本地时间 "YYYY-MM-DD HH:MM:SS"
+}
+
+export interface ActivityListResponse {
+  items: BookActivity[];
+  has_more: boolean;
+  next_before: string;
+}
+
+// 预算越线提醒（SSE budget-alert 事件的 payload）。
+export interface BudgetAlertPayload {
+  budgetId: string;
+  budgetName: string;
+  kind: 'total' | 'category';
+  level: 80 | 100;
+  used: number; // in cents
+  budget: number; // in cents
+  month: string; // "YYYY-MM"
+}
+
 // ==================== Recurring Rules ====================
 
 export type RecurringCycle = 'daily' | 'weekly' | 'monthly' | 'yearly' | string;
@@ -581,3 +612,68 @@ export interface ImportedItem {
   suggested_category_id?: string;
   note: string;
 }
+
+export type SuishoujiColumnTarget =
+  | 'date'
+  | 'type'
+  | 'amount'
+  | 'category'
+  | 'subcategory'
+  | 'wallet'
+  | 'title'
+  | 'note'
+  | 'tags'
+  | '';
+
+export interface SuishoujiPreviewRow {
+  row_index: number;
+  date: string;
+  tx_time: string;
+  type: 'expense' | 'income';
+  amount_cents: number;
+  category_name: string;
+  sub_category: string;
+  wallet_name: string;
+  title: string;
+  note: string;
+  valid: boolean;
+  error?: string;
+}
+
+export interface SuishoujiParseResult {
+  headers: string[];
+  total_rows: number;
+  rows: string[][];
+  samples: string[][];
+  auto_mapping: Record<string, SuishoujiColumnTarget>;
+  ai_available: boolean;
+  ai_reason: string;
+  ai_suggestions: Record<string, SuishoujiColumnTarget>;
+  preview: SuishoujiPreviewRow[];
+  default_wallet_id: string;
+}
+
+export interface SuishoujiRowFailure {
+  row: number;
+  reason: string;
+}
+
+export interface SuishoujiCommitResult {
+  inserted: number;
+  duplicates: number;
+  failed: number;
+  failures: SuishoujiRowFailure[];
+}
+
+export const SUISHOUJI_TARGET_OPTIONS: { value: SuishoujiColumnTarget; label: string }[] = [
+  { value: 'date', label: '日期' },
+  { value: 'type', label: '收支类型' },
+  { value: 'amount', label: '金额' },
+  { value: 'category', label: '一级分类' },
+  { value: 'subcategory', label: '二级分类' },
+  { value: 'wallet', label: '账户' },
+  { value: 'title', label: '标题/商家' },
+  { value: 'note', label: '备注' },
+  { value: 'tags', label: '标签' },
+  { value: '', label: '忽略此列' },
+];

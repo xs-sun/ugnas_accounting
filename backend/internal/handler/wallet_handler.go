@@ -2,23 +2,29 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 
 	"com.xsguyu.accounting/backend/internal/model"
 	"com.xsguyu.accounting/backend/internal/repository"
+	"com.xsguyu.accounting/backend/internal/service"
 )
 
 type WalletHandler struct {
 	walletRepo *repository.WalletRepo
 	bookRepo   *repository.BookRepo
+	hub        *service.Hub
+	recorder   *service.ActivityRecorder
 }
 
-func NewWalletHandler(walletRepo *repository.WalletRepo, bookRepo *repository.BookRepo) *WalletHandler {
+func NewWalletHandler(walletRepo *repository.WalletRepo, bookRepo *repository.BookRepo, hub *service.Hub, recorder *service.ActivityRecorder) *WalletHandler {
 	return &WalletHandler{
 		walletRepo: walletRepo,
 		bookRepo:   bookRepo,
+		hub:        hub,
+		recorder:   recorder,
 	}
 }
 
@@ -124,6 +130,13 @@ func (h *WalletHandler) CreateWallet(w http.ResponseWriter, r *http.Request) {
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:    req.BookID,
+		UserID:    uCtx.ID,
+		ActorName: uCtx.Name,
+		Action:    model.ActivityWalletChanged,
+		Summary:   fmt.Sprintf("添加了钱包「%s」", wallet.Name),
+	}, service.ChangeWallet)
 
 	created, err := h.walletRepo.GetWallet(r.Context(), wallet.ID)
 	if err != nil {
@@ -134,6 +147,7 @@ func (h *WalletHandler) CreateWallet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WalletHandler) UpdateWallet(w http.ResponseWriter, r *http.Request, walletID string) {
+	uCtx := GetUserContext(r)
 	wallet, err := h.walletRepo.GetWallet(r.Context(), walletID)
 	if err != nil {
 		sendError(w, http.StatusNotFound, "wallet not found")
@@ -216,12 +230,20 @@ func (h *WalletHandler) UpdateWallet(w http.ResponseWriter, r *http.Request, wal
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:    wallet.BookID,
+		UserID:    uCtx.ID,
+		ActorName: uCtx.Name,
+		Action:    model.ActivityWalletChanged,
+		Summary:   fmt.Sprintf("更新了钱包「%s」", wallet.Name),
+	}, service.ChangeWallet)
 
 	updated, _ := h.walletRepo.GetWallet(r.Context(), walletID)
 	sendJSON(w, 0, http.StatusOK, "success", updated)
 }
 
 func (h *WalletHandler) DeleteWallet(w http.ResponseWriter, r *http.Request, walletID string) {
+	uCtx := GetUserContext(r)
 	wallet, err := h.walletRepo.GetWallet(r.Context(), walletID)
 	if err != nil {
 		sendError(w, http.StatusNotFound, "wallet not found")
@@ -233,5 +255,12 @@ func (h *WalletHandler) DeleteWallet(w http.ResponseWriter, r *http.Request, wal
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:    wallet.BookID,
+		UserID:    uCtx.ID,
+		ActorName: uCtx.Name,
+		Action:    model.ActivityWalletChanged,
+		Summary:   fmt.Sprintf("归档了钱包「%s」", wallet.Name),
+	}, service.ChangeWallet)
 	sendJSON(w, 0, http.StatusOK, "success", nil)
 }

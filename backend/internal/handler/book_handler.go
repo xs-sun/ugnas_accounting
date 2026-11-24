@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -15,13 +16,17 @@ type BookHandler struct {
 	bookRepo *repository.BookRepo
 	userRepo *repository.UserRepo
 	authSvc  *service.AuthService
+	hub      *service.Hub
+	recorder *service.ActivityRecorder
 }
 
-func NewBookHandler(bookRepo *repository.BookRepo, userRepo *repository.UserRepo, authSvc *service.AuthService) *BookHandler {
+func NewBookHandler(bookRepo *repository.BookRepo, userRepo *repository.UserRepo, authSvc *service.AuthService, hub *service.Hub, recorder *service.ActivityRecorder) *BookHandler {
 	return &BookHandler{
 		bookRepo: bookRepo,
 		userRepo: userRepo,
 		authSvc:  authSvc,
+		hub:      hub,
+		recorder: recorder,
 	}
 }
 
@@ -126,6 +131,7 @@ func (h *BookHandler) UpdateBook(w http.ResponseWriter, r *http.Request, bookID 
 		sendError(w, http.StatusNotFound, "book not found")
 		return
 	}
+	oldName := book.Name
 
 	if req.Name != nil {
 		book.Name = strings.TrimSpace(*req.Name)
@@ -147,6 +153,19 @@ func (h *BookHandler) UpdateBook(w http.ResponseWriter, r *http.Request, bookID 
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	action := model.ActivityBookUpdated
+	summary := fmt.Sprintf("更新了账本「%s」", book.Name)
+	if req.Name != nil && book.Name != oldName {
+		action = model.ActivityBookRenamed
+		summary = fmt.Sprintf("把账本改名为「%s」", book.Name)
+	}
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:    bookID,
+		UserID:    uCtx.ID,
+		ActorName: uCtx.Name,
+		Action:    action,
+		Summary:   summary,
+	}, service.ChangeBook)
 
 	updated, _ := h.bookRepo.GetBook(r.Context(), bookID, uCtx.ID)
 	sendJSON(w, 0, http.StatusOK, "success", updated)
@@ -164,6 +183,7 @@ func (h *BookHandler) DeleteBook(w http.ResponseWriter, r *http.Request, bookID 
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.hub.Publish(bookID, service.ChangeBook, uCtx.Name)
 	sendJSON(w, 0, http.StatusOK, "success", nil)
 }
 
@@ -224,6 +244,13 @@ func (h *BookHandler) AddMember(w http.ResponseWriter, r *http.Request, bookID s
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:    bookID,
+		UserID:    uCtx.ID,
+		ActorName: uCtx.Name,
+		Action:    model.ActivityMemberJoined,
+		Summary:   fmt.Sprintf("邀请了「%s」加入账本", member.UserName),
+	}, service.ChangeMember)
 
 	sendJSON(w, 0, http.StatusCreated, "success", map[string]interface{}{
 		"book_id": bookID,
@@ -344,6 +371,13 @@ func (h *BookHandler) AddVirtualMember(w http.ResponseWriter, r *http.Request, b
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:    bookID,
+		UserID:    uCtx.ID,
+		ActorName: uCtx.Name,
+		Action:    model.ActivityMemberJoined,
+		Summary:   fmt.Sprintf("添加了虚拟成员「%s」", member.UserName),
+	}, service.ChangeMember)
 
 	sendJSON(w, 0, http.StatusCreated, "success", member)
 }
@@ -381,6 +415,13 @@ func (h *BookHandler) JoinByCode(w http.ResponseWriter, r *http.Request) {
 			sendError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+			BookID:    book.ID,
+			UserID:    uCtx.ID,
+			ActorName: uCtx.Name,
+			Action:    model.ActivityMemberJoined,
+			Summary:   "通过邀请码加入了账本",
+		}, service.ChangeMember)
 	}
 
 	fullBook, err := h.bookRepo.GetBook(r.Context(), book.ID, uCtx.ID)
@@ -404,9 +445,27 @@ func (h *BookHandler) RemoveMember(w http.ResponseWriter, r *http.Request, bookI
 		return
 	}
 
+	// 先取名字再删，动态里写得出被移除的是谁。
+	targetName := targetUserID
+	if members, err := h.bookRepo.ListMembers(r.Context(), bookID); err == nil {
+		for _, m := range members {
+			if m.UserID == targetUserID {
+				targetName = m.UserName
+				break
+			}
+		}
+	}
+
 	if err := h.bookRepo.RemoveMember(r.Context(), bookID, targetUserID); err != nil {
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:    bookID,
+		UserID:    uCtx.ID,
+		ActorName: uCtx.Name,
+		Action:    model.ActivityMemberRemoved,
+		Summary:   fmt.Sprintf("移除了成员「%s」", targetName),
+	}, service.ChangeMember)
 	sendJSON(w, 0, http.StatusOK, "success", nil)
 }

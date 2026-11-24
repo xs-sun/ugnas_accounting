@@ -7,7 +7,13 @@ import {
   setStoredAuthToken,
   setUnauthorizedHandler,
 } from '@/api/client';
-import { todayIso } from '@/utils/format';
+import { todayIso, formatMoney } from '@/utils/format';
+import {
+  startLedgerStream,
+  stopLedgerStream,
+  type LedgerChangeType,
+  type LedgerStreamEvent,
+} from '@/composables/useLedgerStream';
 import type {
   UserProfile,
   AuthStatusResponse,
@@ -26,6 +32,8 @@ import type {
   StatsReport,
   DailyReportItem,
   AiChatMessage,
+  BookActivity,
+  BudgetAlertPayload,
 } from '@/types';
 
 const ACTIVE_BOOK_STORAGE_KEY = 'cat7_active_book_id';
@@ -70,6 +78,11 @@ export interface AppState {
   statsType: 'expense' | 'income';
   dailyReport: DailyReportItem[];
   aiMessages: AiChatMessage[];
+  activities: BookActivity[];
+  activitiesHasMore: boolean;
+  activitiesNextBefore: string;
+  activitiesLoading: boolean;
+  latestBudgetAlert: BudgetAlertPayload | null;
   privacyHidden: boolean;
   currentYear: number;
   currentMonth: number;
@@ -122,6 +135,11 @@ const state = reactive<AppState>({
   statsType: 'expense',
   dailyReport: [],
   aiMessages: createDefaultWelcomeMessage(),
+  activities: [],
+  activitiesHasMore: false,
+  activitiesNextBefore: '',
+  activitiesLoading: false,
+  latestBudgetAlert: null,
   privacyHidden: loadInitialPrivacy(),
   currentYear: now.getFullYear(),
   currentMonth: now.getMonth() + 1,
@@ -249,9 +267,14 @@ function resetBookScopedState(): void {
   state.recurringRules = [];
   state.stats = null;
   state.dailyReport = [];
+  state.activities = [];
+  state.activitiesHasMore = false;
+  state.activitiesNextBefore = '';
+  state.latestBudgetAlert = null;
 }
 
 function resetToUnauthenticated(): void {
+  stopLedgerStream();
   setStoredAuthToken(null);
   clearGatewayAuthCache();
   state.adminPreviewAsUser = false;
@@ -411,6 +434,43 @@ async function refreshDailyReport(
   return state.dailyReport;
 }
 
+// 账本动态：reset=true 拉最新一页（替换列表），否则用游标翻下一页（追加）。
+async function refreshActivities(
+  bookId?: string,
+  opts: { reset?: boolean } = {}
+): Promise<BookActivity[]> {
+  const bid = resolveBookId(bookId);
+  if (!bid) return [];
+  if (state.activitiesLoading) return state.activities;
+  const reset = opts.reset !== false;
+  state.activitiesLoading = true;
+  try {
+    const res = await api.listActivities(bid, {
+      limit: 20,
+      before: reset ? undefined : state.activitiesNextBefore || undefined,
+    });
+    if (reset) {
+      state.activities = res.items || [];
+    } else {
+      state.activities = [...state.activities, ...(res.items || [])];
+    }
+    state.activitiesHasMore = res.has_more;
+    state.activitiesNextBefore = res.next_before || '';
+    return state.activities;
+  } finally {
+    state.activitiesLoading = false;
+  }
+}
+
+async function loadMoreActivities(): Promise<BookActivity[]> {
+  if (!state.activitiesHasMore || state.activitiesLoading) return state.activities;
+  return refreshActivities(undefined, { reset: false });
+}
+
+function dismissBudgetAlert(): void {
+  state.latestBudgetAlert = null;
+}
+
 async function refreshBookData(bookId?: string): Promise<void> {
   const bid = resolveBookId(bookId);
   if (!bid) return;
@@ -423,6 +483,7 @@ async function refreshBookData(bookId?: string): Promise<void> {
     refreshRecurring(bid),
     refreshStats(state.statsPeriod, state.statsType, bid),
     refreshDailyReport(state.currentYear, state.currentMonth, bid),
+    refreshActivities(bid),
   ]);
 }
 
@@ -451,6 +512,7 @@ async function initApp(force = false): Promise<void> {
       if (currentSeq !== initSeq) return;
       if (state.activeBookId) {
         await refreshBookData(state.activeBookId);
+        restartLedgerStream();
       }
       if (currentSeq !== initSeq) return;
       state.initialized = true;
@@ -480,12 +542,14 @@ async function initApp(force = false): Promise<void> {
 async function switchBook(bookId: string): Promise<void> {
   if (!bookId || bookId === state.activeBookId) return;
   state.activeBookId = bookId;
+  state.latestBudgetAlert = null;
   if (typeof localStorage !== 'undefined') {
     localStorage.setItem(ACTIVE_BOOK_STORAGE_KEY, bookId);
   }
   state.loading = true;
   try {
     await refreshBookData(bookId);
+    restartLedgerStream();
   } finally {
     state.loading = false;
   }
@@ -514,6 +578,69 @@ async function syncAfterTxMutation(bookId?: string): Promise<void> {
     refreshDailyReport(state.currentYear, state.currentMonth, bid),
     refreshProfile(),
   ]);
+}
+
+// 收到 SSE 事件后按 change 类型定向刷新；connected（初连/重连）时全量刷新一次做同步。
+// 任何变更都可能产生一条动态，所以每次都刷新动态列表；
+// budget-alert 单独处理：弹 toast + 记下来给预算视图打标记 + 刷新预算。
+function handleLedgerStreamEvents(events: LedgerStreamEvent[]): void {
+  const bid = resolveBookId();
+  if (!bid) return;
+  const changes = new Set(
+    events.map((e) => e.change).filter((c): c is LedgerChangeType => Boolean(c)),
+  );
+  const jobs: Array<Promise<unknown>> = [];
+  const budgetAlert = events.find((e) => e.type === 'budget-alert' && e.budgetAlert);
+  if (budgetAlert?.budgetAlert) {
+    const alert = budgetAlert.budgetAlert;
+    state.latestBudgetAlert = alert;
+    showToast(
+      `${alert.budgetName}预算已使用 ${alert.level}%（${formatMoney(alert.used)} / ${formatMoney(alert.budget)}）`,
+      'info'
+    );
+    jobs.push(refreshBudgets(bid, state.currentYear, state.currentMonth));
+  }
+  jobs.push(refreshActivities(bid));
+  if (changes.has('transaction') || changes.has('recurring')) {
+    jobs.push(syncAfterTxMutation(bid));
+  }
+  if (changes.has('wallet')) {
+    jobs.push(
+      Promise.allSettled([
+        refreshWallets(bid),
+        refreshStats(state.statsPeriod, state.statsType, bid),
+      ]),
+    );
+  }
+  if (changes.has('budget')) {
+    jobs.push(
+      Promise.allSettled([
+        refreshBudgets(bid, state.currentYear, state.currentMonth),
+        refreshStats(state.statsPeriod, state.statsType, bid),
+      ]),
+    );
+  }
+  if (changes.has('category')) {
+    jobs.push(refreshCategories(bid));
+  }
+  if (changes.has('member') || changes.has('book')) {
+    jobs.push(Promise.allSettled([refreshBooks(), refreshBookData(bid)]));
+  }
+  if (jobs.length === 0) {
+    jobs.push(refreshBookData(bid));
+  }
+  void Promise.allSettled(jobs);
+}
+
+function restartLedgerStream(): void {
+  const bid = state.activeBookId;
+  if (!bid || !state.user) {
+    stopLedgerStream();
+    return;
+  }
+  startLedgerStream(bid, handleLedgerStreamEvents, () => {
+    void refreshBookData(bid);
+  });
 }
 
 async function createTransaction(
@@ -578,6 +705,7 @@ async function setAuthToken(token: string, user?: UserProfile): Promise<void> {
 }
 
 async function logoutToGuest(): Promise<void> {
+  stopLedgerStream();
   setStoredAuthToken(null);
   state.adminPreviewAsUser = false;
   state.user = null;
@@ -631,6 +759,9 @@ const appStore = reactive({
   refreshBudgets,
   refreshStats,
   refreshDailyReport,
+  refreshActivities,
+  loadMoreActivities,
+  dismissBudgetAlert,
   createTransaction,
   updateTransaction,
   deleteTransaction,

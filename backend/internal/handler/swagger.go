@@ -5,13 +5,13 @@ import (
 	"fmt"
 )
 
-// SwaggerDocJSON returns the complete OpenAPI 3.0.0 specification for SevenCats Accounting v0.2.0
+// SwaggerDocJSON returns the complete OpenAPI 3.0.0 specification for SevenCats Accounting v0.3.0
 func SwaggerDocJSON(appID, version string) []byte {
 	doc := map[string]interface{}{
 		"openapi": "3.0.0",
 		"info": map[string]interface{}{
 			"title":       "七喵记账 (SevenCats Accounting) API Documentation",
-			"description": "基于绿联私有云 (UGOS Pro) 的本地私有化多账本记账与 AI 智能财务平台 API 文档（v0.2.0）。\n\n支持双模鉴权（本地邮箱登录 + UGOS 网关）、一/二级分类与分类预算、定时自动记账、AI 聊着记与 OCR 小票识别、深度报表统计、微信/支付宝 CSV 导入导出、SQLite 无锁热快照与轻量隐私保护后台管理。",
+			"description": "基于绿联私有云 (UGOS Pro) 的本地私有化多账本记账与 AI 智能财务平台 API 文档（v0.3.0）。\n\n支持双模鉴权（本地邮箱登录 + UGOS 网关）、一/二级分类与分类预算、定时自动记账、AI 聊着记与 OCR 小票识别、深度报表统计、微信/支付宝 CSV 导入导出、SQLite 无锁热快照与轻量隐私保护后台管理。",
 			"version":     version,
 			"contact": map[string]interface{}{
 				"name": "七喵工作室 (xsguyu studio)",

@@ -365,6 +365,33 @@ func InitDB(dataDir string) (*DB, error) {
 		updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 	);
 
+	-- 账本动态：谁、在哪个账本、干了什么。随账本删除级联清理。
+	CREATE TABLE IF NOT EXISTS book_activities (
+		id TEXT PRIMARY KEY,
+		book_id TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		actor_name TEXT NOT NULL DEFAULT '',
+		action TEXT NOT NULL,
+		summary TEXT NOT NULL DEFAULT '',
+		amount_cents INTEGER DEFAULT NULL,
+		tx_id TEXT DEFAULT NULL,
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+	);
+
+	-- 预算提醒已通知档位：同一账本、同一预算项、同一月份、同一档位只提醒一次。
+	-- 用量回落到档位之下时删除对应行，下次重新越线会再次提醒。
+	CREATE TABLE IF NOT EXISTS budget_alert_state (
+		book_id TEXT NOT NULL,
+		budget_key TEXT NOT NULL,
+		month TEXT NOT NULL,
+		level INTEGER NOT NULL,
+		notified_at TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (book_id, budget_key, month, level),
+		FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_activities_book_created ON book_activities(book_id, created_at DESC, id DESC);
 	CREATE INDEX IF NOT EXISTS idx_email_codes_lookup ON email_codes(email, purpose, used);
 	CREATE INDEX IF NOT EXISTS idx_recurring_book_next ON recurring_rules(book_id, is_active, next_date);
 	CREATE INDEX IF NOT EXISTS idx_ai_usage_user_date ON ai_usage_logs(user_id, created_at);

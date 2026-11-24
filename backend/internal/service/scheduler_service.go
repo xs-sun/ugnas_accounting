@@ -14,12 +14,16 @@ import (
 type RecurringScheduler struct {
 	recurringRepo *repository.RecurringRepo
 	txRepo        *repository.TransactionRepo
+	hub           *Hub
+	recorder      *ActivityRecorder
 }
 
-func NewRecurringScheduler(recurringRepo *repository.RecurringRepo, txRepo *repository.TransactionRepo) *RecurringScheduler {
+func NewRecurringScheduler(recurringRepo *repository.RecurringRepo, txRepo *repository.TransactionRepo, hub *Hub, recorder *ActivityRecorder) *RecurringScheduler {
 	return &RecurringScheduler{
 		recurringRepo: recurringRepo,
 		txRepo:        txRepo,
+		hub:           hub,
+		recorder:      recorder,
 	}
 }
 
@@ -90,6 +94,23 @@ func (s *RecurringScheduler) RunOnce(ctx context.Context) int {
 			continue
 		}
 		executed++
+		amt := r.Amount
+		txID := tx.ID
+		if s.recorder != nil {
+			s.recorder.Record(ctx, model.BookActivity{
+				BookID:      r.BookID,
+				UserID:      r.CreatedBy,
+				ActorName:   "定时任务",
+				Action:      model.ActivityRecurringPosted,
+				Summary:     fmt.Sprintf("定时记账入账「%s」%s", r.Title, formatCentsYuan(r.Amount)),
+				AmountCents: &amt,
+				TxID:        &txID,
+			}, ChangeTransaction)
+			// 定时入账也可能把当月预算顶过线，立即检查一次。
+			s.recorder.CheckBudgets(ctx, r.BookID)
+		} else if s.hub != nil {
+			s.hub.Publish(r.BookID, ChangeTransaction, "定时任务")
+		}
 	}
 	return executed
 }

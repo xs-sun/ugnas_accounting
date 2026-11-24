@@ -28,11 +28,14 @@ type ImportedItem struct {
 }
 
 type ImportService struct {
-	db *repository.DB
+	db         *repository.DB
+	txRepo     *repository.TransactionRepo
+	catRepo    *repository.CategoryRepo
+	walletRepo *repository.WalletRepo
 }
 
-func NewImportService(db *repository.DB) *ImportService {
-	return &ImportService{db: db}
+func NewImportService(db *repository.DB, txRepo *repository.TransactionRepo, catRepo *repository.CategoryRepo, walletRepo *repository.WalletRepo) *ImportService {
+	return &ImportService{db: db, txRepo: txRepo, catRepo: catRepo, walletRepo: walletRepo}
 }
 
 func parseAmountCents(val string) int64 {

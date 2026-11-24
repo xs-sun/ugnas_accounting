@@ -13,6 +13,7 @@ import (
 
 	"com.xsguyu.accounting/backend/internal/model"
 	"com.xsguyu.accounting/backend/internal/repository"
+	"com.xsguyu.accounting/backend/internal/service"
 	"github.com/google/uuid"
 )
 
@@ -21,16 +22,41 @@ type TransactionHandler struct {
 	bookRepo   *repository.BookRepo
 	walletRepo *repository.WalletRepo
 	dataDir    string
+	hub        *service.Hub
+	recorder   *service.ActivityRecorder
 }
 
-func NewTransactionHandler(txRepo *repository.TransactionRepo, bookRepo *repository.BookRepo, walletRepo *repository.WalletRepo, dataDir string) *TransactionHandler {
+func NewTransactionHandler(txRepo *repository.TransactionRepo, bookRepo *repository.BookRepo, walletRepo *repository.WalletRepo, dataDir string, hub *service.Hub, recorder *service.ActivityRecorder) *TransactionHandler {
 	return &TransactionHandler{
 		txRepo:     txRepo,
 		bookRepo:   bookRepo,
 		walletRepo: walletRepo,
 		dataDir:    dataDir,
+		hub:        hub,
+		recorder:   recorder,
 	}
 }
+
+// txSummary 拼一条交易动态的摘要，如“记了一笔支出「午餐」¥32.00”。
+func txSummary(verb, txType, title string, amount int64) string {
+	label := "支出"
+	switch txType {
+	case "income":
+		label = "收入"
+	case "transfer":
+		label = "转账"
+	}
+	if title == "" {
+		title = label
+	}
+	if txType == "transfer" {
+		return fmt.Sprintf("转账「%s」%s", title, service.FormatYuan(amount))
+	}
+	return fmt.Sprintf("%s%s「%s」%s", verb, label, title, service.FormatYuan(amount))
+}
+
+func txAmountPtr(amount int64) *int64 { return &amount }
+func txIDPtr(id string) *string       { return &id }
 
 func (h *TransactionHandler) ListTransactions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -207,6 +233,18 @@ func (h *TransactionHandler) CreateTransaction(w http.ResponseWriter, r *http.Re
 		sendError(w, http.StatusInternalServerError, msg)
 		return
 	}
+	// AI 草稿确认入账也走 CreateTransaction，这里统一写动态+广播，
+	// 再检查预算（新记的支出可能让当月预算越线）。
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:      req.BookID,
+		UserID:      uCtx.ID,
+		ActorName:   uCtx.Name,
+		Action:      model.ActivityTxCreated,
+		Summary:     txSummary("记了一笔", req.Type, req.Title, amtCents),
+		AmountCents: txAmountPtr(amtCents),
+		TxID:        txIDPtr(tx.ID),
+	}, service.ChangeTransaction)
+	h.recorder.CheckBudgets(r.Context(), req.BookID)
 
 	created, err := h.txRepo.GetTransaction(r.Context(), tx.ID)
 	if err != nil {
@@ -217,6 +255,14 @@ func (h *TransactionHandler) CreateTransaction(w http.ResponseWriter, r *http.Re
 }
 
 func (h *TransactionHandler) UpdateTransaction(w http.ResponseWriter, r *http.Request, txID string) {
+	uCtx := GetUserContext(r)
+	// 先取旧记录：拿到账本 ID 才能广播；不存在时直接 404。
+	old, err := h.txRepo.GetTransaction(r.Context(), txID)
+	if err != nil {
+		sendError(w, http.StatusNotFound, "transaction not found")
+		return
+	}
+
 	var body map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		sendError(w, http.StatusBadRequest, "invalid json")
@@ -232,6 +278,16 @@ func (h *TransactionHandler) UpdateTransaction(w http.ResponseWriter, r *http.Re
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:      old.BookID,
+		UserID:      uCtx.ID,
+		ActorName:   uCtx.Name,
+		Action:      model.ActivityTxUpdated,
+		Summary:     txSummary("修改了一笔", updated.Type, updated.Title, updated.Amount),
+		AmountCents: txAmountPtr(updated.Amount),
+		TxID:        txIDPtr(txID),
+	}, service.ChangeTransaction)
+	h.recorder.CheckBudgets(r.Context(), old.BookID)
 
 	fullTx, err := h.txRepo.GetTransaction(r.Context(), txID)
 	if err != nil {
@@ -242,6 +298,13 @@ func (h *TransactionHandler) UpdateTransaction(w http.ResponseWriter, r *http.Re
 }
 
 func (h *TransactionHandler) DeleteTransaction(w http.ResponseWriter, r *http.Request, txID string) {
+	uCtx := GetUserContext(r)
+	old, err := h.txRepo.GetTransaction(r.Context(), txID)
+	if err != nil {
+		sendError(w, http.StatusNotFound, "transaction not found")
+		return
+	}
+
 	if err := h.txRepo.DeleteTransaction(r.Context(), txID); err != nil {
 		if err == repository.ErrNotFound {
 			sendError(w, http.StatusNotFound, "transaction not found")
@@ -250,10 +313,21 @@ func (h *TransactionHandler) DeleteTransaction(w http.ResponseWriter, r *http.Re
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+		BookID:      old.BookID,
+		UserID:      uCtx.ID,
+		ActorName:   uCtx.Name,
+		Action:      model.ActivityTxDeleted,
+		Summary:     txSummary("删除了一笔", old.Type, old.Title, old.Amount),
+		AmountCents: txAmountPtr(old.Amount),
+		TxID:        txIDPtr(txID),
+	}, service.ChangeTransaction)
+	h.recorder.CheckBudgets(r.Context(), old.BookID)
 	sendJSON(w, 0, http.StatusOK, "success", nil)
 }
 
 func (h *TransactionHandler) BatchDelete(w http.ResponseWriter, r *http.Request) {
+	uCtx := GetUserContext(r)
 	var req struct {
 		IDs []string `json:"ids"`
 	}
@@ -261,10 +335,31 @@ func (h *TransactionHandler) BatchDelete(w http.ResponseWriter, r *http.Request)
 		sendError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	// 先取每笔的账本（一次批量删除可能跨账本，按账本分别广播）。
+	bookIDs := make(map[string]struct{})
+	bookCounts := make(map[string]int)
+	for _, id := range req.IDs {
+		if tx, err := h.txRepo.GetTransaction(r.Context(), id); err == nil {
+			bookIDs[tx.BookID] = struct{}{}
+			bookCounts[tx.BookID]++
+		}
+	}
 	deleted, err := h.txRepo.BatchDeleteTransactions(r.Context(), req.IDs)
 	if err != nil {
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if deleted > 0 {
+		for bookID := range bookIDs {
+			recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
+				BookID:    bookID,
+				UserID:    uCtx.ID,
+				ActorName: uCtx.Name,
+				Action:    model.ActivityTxDeleted,
+				Summary:   fmt.Sprintf("批量删除了 %d 笔流水", bookCounts[bookID]),
+			}, service.ChangeTransaction)
+			h.recorder.CheckBudgets(r.Context(), bookID)
+		}
 	}
 	sendJSON(w, 0, http.StatusOK, "success", map[string]interface{}{
 		"deleted": deleted,

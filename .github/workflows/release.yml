@@ -1,0 +1,106 @@
+# 七喵记账 — GitHub Release 自动发布
+#
+# 触发方式（二选一）：
+#   1. 打 tag 并推送：git tag v0.3.0 && git push origin v0.3.0
+#      （tag 的版本号必须与 project.yaml 里的 version 一致，否则工作流会失败）
+#   2. 手动触发：Actions 页 → Release → Run workflow，可填 version
+#      （留空则读 project.yaml；填了且与 project.yaml 不同时，仅在 runner 内
+#       临时改写 project.yaml 的 version 用于打包，不会提交回仓库）
+#
+# 流程：检出代码 → 装 pnpm + Node + Go → 下载 ugcli → 跑 build.sh --pack
+# （amd64）→ 用 gh CLI 创建 Release 并上传 .upk。
+# 发布的是 amd64 包（绿联 DXP4800 是 x86_64）；需要 arm64 时把 --arch 改成 all。
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（x.y.z，留空则读 project.yaml）"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: backend/go.sum
+
+      - name: 安装 ugcli
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fSL -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36" \
+            -o "$HOME/.local/bin/ugcli" \
+            "https://osswaf.ugnas.com/pro/ugcli/download/ugcli-v1.1.0.25-linux-amd64"
+          chmod +x "$HOME/.local/bin/ugcli"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          ugcli --version
+
+      - name: 确定版本号
+        id: version
+        run: |
+          set -euo pipefail
+          PROJECT_VERSION="$(grep '^version:' project.yaml | head -n1 | awk '{print $2}' | tr -d '"' | tr -d "'")"
+          echo "project.yaml version: $PROJECT_VERSION"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            if [ "$VERSION" != "$PROJECT_VERSION" ]; then
+              echo "::error::tag v$VERSION 与 project.yaml 的 version $PROJECT_VERSION 不一致，请先把 project.yaml 改成 $VERSION 再打 tag"
+              exit 1
+            fi
+          else
+            if [ -n "${{ inputs.version }}" ]; then
+              VERSION="${{ inputs.version }}"
+              if [ "$VERSION" != "$PROJECT_VERSION" ]; then
+                echo "手动指定的 version $VERSION 与 project.yaml 不同，仅在 runner 内临时改写 project.yaml（不提交）"
+                sed -i "s/^version: .*/version: \"$VERSION\"/" project.yaml
+                grep '^version:' project.yaml
+              fi
+            else
+              VERSION="$PROJECT_VERSION"
+            fi
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "发布版本：$VERSION（tag v$VERSION）"
+
+      - name: 构建并打包 .upk（amd64）
+        run: |
+          ./build.sh --pack --build "${{ github.run_number }}" --arch amd64
+          echo "=== 打包产物 ==="
+          ls -la build_dir/pkgs/upk/
+
+      - name: 创建 Release 并上传 .upk
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            build_dir/pkgs/upk/*.upk \
+            --title "七喵记账 ${{ steps.version.outputs.tag }}" \
+            --generate-notes
