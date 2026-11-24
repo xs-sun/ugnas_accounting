@@ -3,15 +3,16 @@
 # build.sh - Automated Build & Packaging Pipeline for 七喵记账 (com.xsguyu.accounting)
 # 
 # Features:
-#   1. Toolchain discovery & verification (Node.js, pnpm/npm, Go 1.22+, ugcli, Docker)
-#   2. Intelligent Go path resolution (PATH, /usr/local/go, /opt/homebrew, Homebrew)
+#   1. Toolchain discovery & verification (Node.js, pnpm/npm, Go 1.22+, zig, ugcli, Docker)
+#   2. Intelligent Go path resolution (PATH, ~/.local/bin, /usr/local/go, /opt/homebrew, Homebrew)
 #   3. Containerized Go cross-compilation fallback via Docker if Go is not installed
 #   4. Frontend compilation (Vite + Vue 3) -> rootfs_common/www
 #   5. Backend Go cross-compilation (CGO_ENABLED=0 Linux amd64/arm64) -> rootfs_*/bin
-#   6. Package structure validation (ugcli check with internal structural fallback)
-#   7. UPK packaging automation (ugcli pack --build <num> --arch <arch>)
-#   8. Clean artifacts option (--clean, --clean-only)
-#   9. Rich ANSI color logging and POSIX-compliant status codes
+#   6. 3-tier launcher compilation/generation (zig cc -> Docker gcc -> POSIX #!/bin/sh fallback)
+#   7. Package structure validation (ugcli check with internal structural fallback)
+#   8. UPK packaging automation (ugcli pack --build <num> --arch <arch>)
+#   9. Clean artifacts option (--clean, --clean-only)
+#   10. Rich ANSI color logging and POSIX-compliant status codes
 # ==============================================================================
 
 set -euo pipefail
@@ -253,6 +254,8 @@ if [ "$SKIP_BACKEND" = false ]; then
     else
       # Probe common Go install paths
       COMMON_GO_PATHS=(
+        "$HOME/.local/bin/go"
+        "$HOME/.local/go/bin/go"
         "/usr/local/go/bin/go"
         "/opt/homebrew/bin/go"
         "/usr/local/bin/go"
@@ -305,6 +308,9 @@ fi
 UGCLI_BIN=""
 if command -v ugcli &>/dev/null; then
   UGCLI_BIN="$(command -v ugcli)"
+  log_info "Found ugcli: ${UGCLI_BIN} ($("$UGCLI_BIN" -v 2>/dev/null || echo 'installed'))"
+elif [ -x "$HOME/.local/bin/ugcli" ]; then
+  UGCLI_BIN="$HOME/.local/bin/ugcli"
   log_info "Found ugcli: ${UGCLI_BIN} ($("$UGCLI_BIN" -v 2>/dev/null || echo 'installed'))"
 elif [ -x "/usr/local/bin/ugcli" ]; then
   UGCLI_BIN="/usr/local/bin/ugcli"
@@ -372,14 +378,46 @@ else
     exit 1
   fi
 
+  write_posix_launcher() {
+    local target="$1"
+    cat > "$target" <<'EOF'
+#!/bin/sh
+unset GODEBUG
+BIN_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+APP_ROOT="$(dirname "$BIN_DIR")"
+cd "$APP_ROOT" || exit 1
+[ -x "$BIN_DIR/accounting_core" ] || chmod +x "$BIN_DIR/accounting_core" 2>/dev/null || true
+exec "$BIN_DIR/accounting_core" "$@"
+EOF
+    chmod +x "$target"
+  }
+
   compile_native_launchers() {
-    log_info "Compiling native static ELF launchers (bin/accounting_serv) via Docker..."
-    docker run --rm -v "$ROOT_DIR":/work -w /work debian:bookworm-slim sh -c "
-      apt-get update -qq && apt-get install -qq -y gcc gcc-aarch64-linux-gnu libc6-dev-arm64-cross >/dev/null 2>&1 &&
-      gcc -static -O2 -s backend/cmd/launcher/main.c -o rootfs_amd64/bin/accounting_serv &&
-      aarch64-linux-gnu-gcc -static -O2 -s backend/cmd/launcher/main.c -o rootfs_arm64/bin/accounting_serv
-    "
-    chmod +x "$ROOT_DIR/rootfs_amd64/bin/accounting_serv" "$ROOT_DIR/rootfs_arm64/bin/accounting_serv"
+    local zig_bin=""
+    if command -v zig &>/dev/null; then
+      zig_bin="$(command -v zig)"
+    elif [ -x "$HOME/.local/bin/zig" ]; then
+      zig_bin="$HOME/.local/bin/zig"
+    fi
+
+    if [ -n "$zig_bin" ]; then
+      log_info "Compiling native static ELF launchers (bin/accounting_serv) via zig (${zig_bin})..."
+      "$zig_bin" cc -target x86_64-linux-musl -static -O2 -s "$ROOT_DIR/backend/cmd/launcher/main.c" -o "$ROOT_DIR/rootfs_amd64/bin/accounting_serv"
+      "$zig_bin" cc -target aarch64-linux-musl -static -O2 -s "$ROOT_DIR/backend/cmd/launcher/main.c" -o "$ROOT_DIR/rootfs_arm64/bin/accounting_serv"
+      chmod +x "$ROOT_DIR/rootfs_amd64/bin/accounting_serv" "$ROOT_DIR/rootfs_arm64/bin/accounting_serv"
+    elif command -v docker &>/dev/null && docker info &>/dev/null; then
+      log_info "Compiling native static ELF launchers (bin/accounting_serv) via Docker..."
+      docker run --rm -v "$ROOT_DIR":/work -w /work debian:bookworm-slim sh -c "
+        apt-get update -qq && apt-get install -qq -y gcc gcc-aarch64-linux-gnu libc6-dev-arm64-cross >/dev/null 2>&1 &&
+        gcc -static -O2 -s backend/cmd/launcher/main.c -o rootfs_amd64/bin/accounting_serv &&
+        aarch64-linux-gnu-gcc -static -O2 -s backend/cmd/launcher/main.c -o rootfs_arm64/bin/accounting_serv
+      "
+      chmod +x "$ROOT_DIR/rootfs_amd64/bin/accounting_serv" "$ROOT_DIR/rootfs_arm64/bin/accounting_serv"
+    else
+      log_warn "Neither zig nor Docker daemon available; generating zero-dependency POSIX #!/bin/sh launchers..."
+      write_posix_launcher "$ROOT_DIR/rootfs_amd64/bin/accounting_serv"
+      write_posix_launcher "$ROOT_DIR/rootfs_arm64/bin/accounting_serv"
+    fi
   }
 
   # Always ensure local host binary is built when running locally or missing
@@ -400,6 +438,9 @@ else
       clang -O2 "$ROOT_DIR/backend/cmd/launcher/main.c" -o "$ROOT_DIR/bin/accounting_serv"
     elif command -v gcc &>/dev/null; then
       gcc -O2 "$ROOT_DIR/backend/cmd/launcher/main.c" -o "$ROOT_DIR/bin/accounting_serv"
+    else
+      log_warn "Neither clang nor gcc found; generating POSIX #!/bin/sh launcher for host..."
+      write_posix_launcher "$ROOT_DIR/bin/accounting_serv"
     fi
     chmod +x "$ROOT_DIR/bin/accounting_serv"
     HOST_SIZE="$(du -sh "$ROOT_DIR/bin/accounting_core" | awk '{print $1}')"
@@ -529,7 +570,7 @@ else
     # Read current version from project.yaml
     APP_VERSION="$(grep '^version:' "$ROOT_DIR/project.yaml" | head -n1 | awk '{print $2}' | tr -d '"' | tr -d "'")"
     if [ -z "$APP_VERSION" ]; then
-      APP_VERSION="0.1.1"
+      APP_VERSION="0.2.0"
     fi
 
     # Auto-increment build number if not explicitly specified via -b / --build

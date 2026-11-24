@@ -7,25 +7,24 @@ import (
 
 	"com.xsguyu.accounting/backend/internal/model"
 	"com.xsguyu.accounting/backend/internal/repository"
+	"com.xsguyu.accounting/backend/internal/service"
+	"github.com/google/uuid"
 )
 
 type BookHandler struct {
 	bookRepo *repository.BookRepo
+	userRepo *repository.UserRepo
+	authSvc  *service.AuthService
 }
 
-func NewBookHandler(bookRepo *repository.BookRepo) *BookHandler {
-	return &BookHandler{bookRepo: bookRepo}
+func NewBookHandler(bookRepo *repository.BookRepo, userRepo *repository.UserRepo, authSvc *service.AuthService) *BookHandler {
+	return &BookHandler{
+		bookRepo: bookRepo,
+		userRepo: userRepo,
+		authSvc:  authSvc,
+	}
 }
 
-// ListBooks godoc
-// @Summary 获取账本列表
-// @Description 获取当前登录用户有权限访问的所有账本（包含拥有者、协作者、只读成员）
-// @Tags Books
-// @Accept json
-// @Produce json
-// @Success 200 {object} Response{data=[]model.Book} "账本列表"
-// @Failure 500 {object} Response "服务器内部错误"
-// @Router /api/v1/books [get]
 func (h *BookHandler) ListBooks(w http.ResponseWriter, r *http.Request) {
 	uCtx := GetUserContext(r)
 	books, err := h.bookRepo.ListBooks(r.Context(), uCtx.ID)
@@ -33,23 +32,17 @@ func (h *BookHandler) ListBooks(w http.ResponseWriter, r *http.Request) {
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if len(books) == 0 {
+		if err := h.bookRepo.EnsureDefaultBookForUser(r.Context(), uCtx.ID, uCtx.Name); err == nil {
+			books, _ = h.bookRepo.ListBooks(r.Context(), uCtx.ID)
+		}
+	}
 	if books == nil {
 		books = []model.Book{}
 	}
 	sendJSON(w, 0, http.StatusOK, "success", books)
 }
 
-// CreateBook godoc
-// @Summary 创建新账本
-// @Description 创建新的财务账本，并初始化当前用户为 Owner
-// @Tags Books
-// @Accept json
-// @Produce json
-// @Param request body model.Book true "账本创建参数"
-// @Success 201 {object} Response{data=model.Book} "创建成功"
-// @Failure 400 {object} Response "参数不合法"
-// @Failure 500 {object} Response "服务器内部错误"
-// @Router /api/v1/books [post]
 func (h *BookHandler) CreateBook(w http.ResponseWriter, r *http.Request) {
 	uCtx := GetUserContext(r)
 	var req struct {
@@ -57,6 +50,8 @@ func (h *BookHandler) CreateBook(w http.ResponseWriter, r *http.Request) {
 		Name        string `json:"name"`
 		Currency    string `json:"currency"`
 		Description string `json:"description"`
+		Color       string `json:"color"`
+		Budget      int64  `json:"budget"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		sendError(w, http.StatusBadRequest, "invalid json")
@@ -71,12 +66,20 @@ func (h *BookHandler) CreateBook(w http.ResponseWriter, r *http.Request) {
 	if req.Currency == "" {
 		req.Currency = "CNY"
 	}
+	if req.Color == "" {
+		req.Color = "#DE8A1E"
+	}
+	if req.Budget <= 0 {
+		req.Budget = 450000
+	}
 
 	book := &model.Book{
 		ID:          req.ID,
 		Name:        req.Name,
 		Currency:    req.Currency,
 		Description: req.Description,
+		Color:       req.Color,
+		Budget:      req.Budget,
 		OwnerID:     uCtx.ID,
 	}
 
@@ -94,16 +97,6 @@ func (h *BookHandler) CreateBook(w http.ResponseWriter, r *http.Request) {
 	sendJSON(w, 0, http.StatusCreated, "success", created)
 }
 
-// GetBook godoc
-// @Summary 获取账本详情
-// @Description 根据账本 ID 获取账本详细配置信息
-// @Tags Books
-// @Accept json
-// @Produce json
-// @Param id path string true "账本 ID"
-// @Success 200 {object} Response{data=model.Book} "账本详情"
-// @Failure 404 {object} Response "账本不存在"
-// @Router /api/v1/books/{id} [get]
 func (h *BookHandler) GetBook(w http.ResponseWriter, r *http.Request, bookID string) {
 	uCtx := GetUserContext(r)
 	book, err := h.bookRepo.GetBook(r.Context(), bookID, uCtx.ID)
@@ -114,23 +107,13 @@ func (h *BookHandler) GetBook(w http.ResponseWriter, r *http.Request, bookID str
 	sendJSON(w, 0, http.StatusOK, "success", book)
 }
 
-// UpdateBook godoc
-// @Summary 修改账本信息
-// @Description 修改账本名称、币种或备注描述
-// @Tags Books
-// @Accept json
-// @Produce json
-// @Param id path string true "账本 ID"
-// @Param request body model.Book true "修改参数"
-// @Success 200 {object} Response{data=model.Book} "修改成功"
-// @Failure 400 {object} Response "参数不合法"
-// @Failure 404 {object} Response "账本不存在"
-// @Router /api/v1/books/{id} [put]
 func (h *BookHandler) UpdateBook(w http.ResponseWriter, r *http.Request, bookID string) {
 	var req struct {
 		Name        *string `json:"name"`
 		Description *string `json:"description"`
 		Currency    *string `json:"currency"`
+		Color       *string `json:"color"`
+		Budget      *int64  `json:"budget"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		sendError(w, http.StatusBadRequest, "invalid json")
@@ -153,6 +136,12 @@ func (h *BookHandler) UpdateBook(w http.ResponseWriter, r *http.Request, bookID 
 	if req.Currency != nil {
 		book.Currency = *req.Currency
 	}
+	if req.Color != nil && strings.TrimSpace(*req.Color) != "" {
+		book.Color = strings.TrimSpace(*req.Color)
+	}
+	if req.Budget != nil && *req.Budget >= 0 {
+		book.Budget = *req.Budget
+	}
 
 	if err := h.bookRepo.UpdateBook(r.Context(), book); err != nil {
 		sendError(w, http.StatusInternalServerError, err.Error())
@@ -163,17 +152,6 @@ func (h *BookHandler) UpdateBook(w http.ResponseWriter, r *http.Request, bookID 
 	sendJSON(w, 0, http.StatusOK, "success", updated)
 }
 
-// DeleteBook godoc
-// @Summary 安全删除账本
-// @Description 物理删除账本及其下全部流水与账户（仅所有者 Owner 可执行）
-// @Tags Books
-// @Accept json
-// @Produce json
-// @Param id path string true "账本 ID"
-// @Success 200 {object} Response "删除成功"
-// @Failure 403 {object} Response "权限不足"
-// @Failure 500 {object} Response "服务器内部错误"
-// @Router /api/v1/books/{id} [delete]
 func (h *BookHandler) DeleteBook(w http.ResponseWriter, r *http.Request, bookID string) {
 	uCtx := GetUserContext(r)
 	role, err := h.bookRepo.GetMemberRole(r.Context(), bookID, uCtx.ID)
@@ -189,17 +167,9 @@ func (h *BookHandler) DeleteBook(w http.ResponseWriter, r *http.Request, bookID 
 	sendJSON(w, 0, http.StatusOK, "success", nil)
 }
 
-// ListMembers godoc
-// @Summary 获取账本成员列表
-// @Description 获取账本内所有成员及其角色权限
-// @Tags Books
-// @Accept json
-// @Produce json
-// @Param id path string true "账本 ID"
-// @Success 200 {object} Response{data=[]model.BookMember} "成员列表"
-// @Router /api/v1/books/{id}/members [get]
 func (h *BookHandler) ListMembers(w http.ResponseWriter, r *http.Request, bookID string) {
-	members, err := h.bookRepo.ListMembers(r.Context(), bookID)
+	uCtx := GetUserContext(r)
+	members, err := h.bookRepo.ListMembersForUser(r.Context(), bookID, uCtx.ID)
 	if err != nil {
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -210,18 +180,6 @@ func (h *BookHandler) ListMembers(w http.ResponseWriter, r *http.Request, bookID
 	sendJSON(w, 0, http.StatusOK, "success", members)
 }
 
-// AddMember godoc
-// @Summary 邀请/添加账本成员
-// @Description 邀请绿联家庭成员或用户加入账本
-// @Tags Books
-// @Accept json
-// @Produce json
-// @Param id path string true "账本 ID"
-// @Param request body model.BookMember true "成员信息"
-// @Success 201 {object} Response "添加成功"
-// @Failure 403 {object} Response "权限不足"
-// @Failure 409 {object} Response "成员已存在"
-// @Router /api/v1/books/{id}/members [post]
 func (h *BookHandler) AddMember(w http.ResponseWriter, r *http.Request, bookID string) {
 	uCtx := GetUserContext(r)
 	role, err := h.bookRepo.GetMemberRole(r.Context(), bookID, uCtx.ID)
@@ -234,6 +192,8 @@ func (h *BookHandler) AddMember(w http.ResponseWriter, r *http.Request, bookID s
 		UserID   string `json:"user_id"`
 		UserName string `json:"user_name"`
 		Role     string `json:"role"`
+		Avatar   string `json:"avatar"`
+		Color    string `json:"color"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		sendError(w, http.StatusBadRequest, "invalid json")
@@ -252,6 +212,8 @@ func (h *BookHandler) AddMember(w http.ResponseWriter, r *http.Request, bookID s
 		UserID:   req.UserID,
 		UserName: req.UserName,
 		Role:     req.Role,
+		Avatar:   req.Avatar,
+		Color:    req.Color,
 	}
 
 	if err := h.bookRepo.AddMember(r.Context(), member); err != nil {
@@ -270,18 +232,165 @@ func (h *BookHandler) AddMember(w http.ResponseWriter, r *http.Request, bookID s
 	})
 }
 
-// RemoveMember godoc
-// @Summary 移除账本成员
-// @Description 将指定成员从账本中移除（仅 Owner 可操作）
-// @Tags Books
-// @Accept json
-// @Produce json
-// @Param id path string true "账本 ID"
-// @Param userId path string true "目标用户 ID"
-// @Success 200 {object} Response "移除成功"
-// @Failure 400 {object} Response "唯一所有者不能移除自身"
-// @Failure 403 {object} Response "权限不足"
-// @Router /api/v1/books/{id}/members/{userId} [delete]
+func (h *BookHandler) InviteByEmail(w http.ResponseWriter, r *http.Request, bookID string) {
+	uCtx := GetUserContext(r)
+	role, err := h.bookRepo.GetMemberRole(r.Context(), bookID, uCtx.ID)
+	if err != nil || role != "owner" {
+		sendError(w, http.StatusForbidden, "only owner can invite members")
+		return
+	}
+	book, err := h.bookRepo.GetBook(r.Context(), bookID, uCtx.ID)
+	if err != nil {
+		sendError(w, http.StatusNotFound, "book not found")
+		return
+	}
+
+	var req struct {
+		Email string `json:"email"`
+		Role  string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if email == "" || !strings.Contains(email, "@") {
+		sendError(w, http.StatusBadRequest, "valid email required")
+		return
+	}
+	if req.Role == "" {
+		req.Role = "editor"
+	}
+
+	member := &model.BookMember{
+		BookID: bookID,
+		Role:   req.Role,
+		Color:  "#3E8E63",
+		Status: "invited",
+	}
+
+	if targetUser, uErr := h.userRepo.GetUserByEmail(r.Context(), email); uErr == nil && targetUser != nil {
+		member.UserID = targetUser.ID
+		member.UserName = targetUser.Name
+		member.Avatar = targetUser.Avatar
+		member.Status = "active"
+	} else {
+		member.UserID = "inv_" + uuid.NewString()[:8]
+		member.UserName = strings.SplitN(email, "@", 2)[0]
+		member.Avatar = "/avatars/cat-2.jpg"
+	}
+
+	if err := h.bookRepo.AddMember(r.Context(), member); err != nil {
+		if err == repository.ErrConflict {
+			sendError(w, http.StatusConflict, "member already exists in book")
+			return
+		}
+		sendError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	smtpSent := false
+	if h.authSvc != nil {
+		sent, err := h.authSvc.SendBookInviteEmail(r.Context(), email, uCtx.Name, book.Name, book.InviteCode)
+		if err == nil {
+			smtpSent = sent
+		}
+	}
+
+	sendJSON(w, 0, http.StatusCreated, "success", map[string]interface{}{
+		"member":      member,
+		"invite_code": book.InviteCode,
+		"smtp_sent":   smtpSent,
+	})
+}
+
+func (h *BookHandler) AddVirtualMember(w http.ResponseWriter, r *http.Request, bookID string) {
+	uCtx := GetUserContext(r)
+	role, err := h.bookRepo.GetMemberRole(r.Context(), bookID, uCtx.ID)
+	if err != nil || role != "owner" {
+		sendError(w, http.StatusForbidden, "only owner can add virtual members")
+		return
+	}
+
+	var req struct {
+		Name  string `json:"name"`
+		Color string `json:"color"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		sendError(w, http.StatusBadRequest, "name required")
+		return
+	}
+	if req.Color == "" {
+		req.Color = "#3E8E63"
+	}
+
+	member := &model.BookMember{
+		BookID:    bookID,
+		UserID:    "virt_" + uuid.NewString()[:8],
+		UserName:  name,
+		Role:      "editor",
+		Avatar:    service.RandomCatAvatar(),
+		Color:     req.Color,
+		IsVirtual: true,
+		Status:    "active",
+	}
+
+	if err := h.bookRepo.AddMember(r.Context(), member); err != nil {
+		sendError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	sendJSON(w, 0, http.StatusCreated, "success", member)
+}
+
+func (h *BookHandler) JoinByCode(w http.ResponseWriter, r *http.Request) {
+	uCtx := GetUserContext(r)
+	var req struct {
+		InviteCode string `json:"invite_code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	code := strings.ToUpper(strings.TrimSpace(req.InviteCode))
+	if code == "" {
+		sendError(w, http.StatusBadRequest, "invite_code required")
+		return
+	}
+
+	book, err := h.bookRepo.GetBookByInviteCode(r.Context(), code)
+	if err != nil {
+		sendError(w, http.StatusNotFound, "invalid invite code")
+		return
+	}
+
+	if _, roleErr := h.bookRepo.GetMemberRole(r.Context(), book.ID, uCtx.ID); roleErr != nil {
+		member := &model.BookMember{
+			BookID:   book.ID,
+			UserID:   uCtx.ID,
+			UserName: uCtx.Name,
+			Role:     "editor",
+			Status:   "active",
+		}
+		if err := h.bookRepo.AddMember(r.Context(), member); err != nil && err != repository.ErrConflict {
+			sendError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	fullBook, err := h.bookRepo.GetBook(r.Context(), book.ID, uCtx.ID)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	sendJSON(w, 0, http.StatusOK, "success", fullBook)
+}
+
 func (h *BookHandler) RemoveMember(w http.ResponseWriter, r *http.Request, bookID, targetUserID string) {
 	uCtx := GetUserContext(r)
 	role, err := h.bookRepo.GetMemberRole(r.Context(), bookID, uCtx.ID)

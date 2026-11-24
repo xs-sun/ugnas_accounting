@@ -1,9 +1,11 @@
 package repository
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"fmt"
 	"log"
+	"math/big"
 	"os"
 	"path/filepath"
 
@@ -13,6 +15,48 @@ import (
 type DB struct {
 	*sql.DB
 	Path string
+}
+
+func ensureColumn(db *sql.DB, table, col, ddl string) error {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s);", table))
+	if err != nil {
+		return fmt.Errorf("pragma table_info(%s): %w", table, err)
+	}
+	defer rows.Close()
+
+	var (
+		cid     int
+		name    string
+		colType string
+		notNull int
+		dflt    sql.NullString
+		pk      int
+	)
+	for rows.Next() {
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			return fmt.Errorf("scan table_info(%s): %w", table, err)
+		}
+		if name == col {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	alterSQL := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s;", table, col, ddl)
+	if _, err := db.Exec(alterSQL); err != nil {
+		return fmt.Errorf("alter table %s add %s: %w", table, col, err)
+	}
+	return nil
+}
+
+func randomDigits4() string {
+	n, err := rand.Int(rand.Reader, big.NewInt(9000))
+	if err != nil {
+		return "2094"
+	}
+	return fmt.Sprintf("%04d", 1000+n.Int64())
 }
 
 func InitDB(dataDir string) (*DB, error) {
@@ -31,7 +75,8 @@ func InitDB(dataDir string) (*DB, error) {
 	}
 
 	dbPath := filepath.Join(dataDir, "accounting.db")
-	db, err := sql.Open("sqlite", dbPath)
+	dsn := "file:" + filepath.ToSlash(dbPath) + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite database: %w", err)
 	}
@@ -164,7 +209,7 @@ func InitDB(dataDir string) (*DB, error) {
 		PRIMARY KEY (date, book_id, type, category_id)
 	);
 
-	CREATE INDEX IF NOT EXISTS idx_daily_summaries_query 
+	CREATE INDEX IF NOT EXISTS idx_daily_summaries_query
 	ON daily_summaries (book_id, type, date, category_id, total_amount, count);
 
 	CREATE INDEX IF NOT EXISTS idx_trans_book_date ON transactions(book_id, date);
@@ -201,7 +246,7 @@ func InitDB(dataDir string) (*DB, error) {
 		UPDATE daily_summaries
 		SET total_amount = total_amount - OLD.amount,
 			count = count - 1
-		WHERE date = OLD.date AND book_id = OLD.book_id AND type = OLD.type 
+		WHERE date = OLD.date AND book_id = OLD.book_id AND type = OLD.type
 		  AND category_id = COALESCE(OLD.category_id, 'uncategorized');
 	END;
 	`
@@ -210,6 +255,182 @@ func InitDB(dataDir string) (*DB, error) {
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
-	log.Printf("[INFO] Database initialized at %s with WAL + mmap + triggers", dbPath)
+	// Idempotent column migrations for existing 10 tables
+	columnMigrations := []struct {
+		table string
+		col   string
+		ddl   string
+	}{
+		{"books", "color", "TEXT NOT NULL DEFAULT '#DE8A1E'"},
+		{"books", "budget", "INTEGER NOT NULL DEFAULT 450000"},
+		{"books", "invite_code", "TEXT NOT NULL DEFAULT ''"},
+
+		{"book_members", "avatar", "TEXT DEFAULT ''"},
+		{"book_members", "color", "TEXT DEFAULT '#DE8A1E'"},
+		{"book_members", "is_virtual", "INTEGER NOT NULL DEFAULT 0"},
+		{"book_members", "status", "TEXT NOT NULL DEFAULT 'active'"},
+
+		{"wallets", "group_name", "TEXT DEFAULT '电子钱包'"},
+		{"wallets", "color", "TEXT DEFAULT '#DE8A1E'"},
+
+		{"categories", "bg_color", "TEXT DEFAULT '#FFF6E8'"},
+		{"categories", "is_custom", "INTEGER NOT NULL DEFAULT 0"},
+		{"categories", "sort_order", "INTEGER NOT NULL DEFAULT 0"},
+
+		{"transactions", "title", "TEXT DEFAULT ''"},
+		{"transactions", "sub_category", "TEXT DEFAULT ''"},
+		{"transactions", "tx_time", "TEXT DEFAULT ''"},
+		{"transactions", "include_budget", "INTEGER NOT NULL DEFAULT 1"},
+		{"transactions", "reimburse", "INTEGER NOT NULL DEFAULT 0"},
+	}
+
+	for _, m := range columnMigrations {
+		if err := ensureColumn(db, m.table, m.col, m.ddl); err != nil {
+			return nil, fmt.Errorf("column migration %s.%s failed: %w", m.table, m.col, err)
+		}
+	}
+
+	// New tables for v0.2.0
+	newTablesSchema := `
+	CREATE TABLE IF NOT EXISTS users (
+		id TEXT PRIMARY KEY,
+		username TEXT DEFAULT '',
+		name TEXT NOT NULL,
+		email TEXT UNIQUE,
+		password_hash TEXT DEFAULT '',
+		avatar TEXT DEFAULT '/avatars/cat-1.jpg',
+		role TEXT NOT NULL DEFAULT 'user',
+		email_bound INTEGER NOT NULL DEFAULT 0,
+		gateway_uid TEXT DEFAULT '',
+		daily_ai_limit INTEGER NOT NULL DEFAULT 30,
+		is_active INTEGER NOT NULL DEFAULT 1,
+		last_active_at TEXT NOT NULL DEFAULT (datetime('now')),
+		created_at TEXT NOT NULL DEFAULT (datetime('now'))
+	);
+
+	CREATE TABLE IF NOT EXISTS email_codes (
+		id TEXT PRIMARY KEY,
+		email TEXT NOT NULL,
+		code TEXT NOT NULL,
+		purpose TEXT NOT NULL,
+		expires_at TEXT NOT NULL,
+		used INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL DEFAULT (datetime('now'))
+	);
+
+	CREATE TABLE IF NOT EXISTS category_budgets (
+		book_id TEXT NOT NULL,
+		category_id TEXT NOT NULL,
+		limit_amount INTEGER NOT NULL DEFAULT 0,
+		updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (book_id, category_id),
+		FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+	);
+
+	CREATE TABLE IF NOT EXISTS recurring_rules (
+		id TEXT PRIMARY KEY,
+		book_id TEXT NOT NULL,
+		type TEXT NOT NULL,
+		category_id TEXT NOT NULL,
+		sub_category TEXT DEFAULT '',
+		title TEXT NOT NULL,
+		amount INTEGER NOT NULL,
+		cycle TEXT NOT NULL,
+		start_date TEXT NOT NULL,
+		end_rule TEXT DEFAULT '不结束',
+		next_date TEXT NOT NULL,
+		executed_count INTEGER NOT NULL DEFAULT 0,
+		wallet_id TEXT NOT NULL,
+		exclude_stats INTEGER NOT NULL DEFAULT 0,
+		is_active INTEGER NOT NULL DEFAULT 1,
+		created_by TEXT NOT NULL,
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+		FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+	);
+
+	CREATE TABLE IF NOT EXISTS ai_usage_logs (
+		id TEXT PRIMARY KEY,
+		user_id TEXT NOT NULL,
+		action TEXT NOT NULL,
+		model TEXT DEFAULT '',
+		input_tokens INTEGER NOT NULL DEFAULT 0,
+		output_tokens INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL DEFAULT (datetime('now'))
+	);
+
+	CREATE TABLE IF NOT EXISTS system_settings (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL,
+		updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_email_codes_lookup ON email_codes(email, purpose, used);
+	CREATE INDEX IF NOT EXISTS idx_recurring_book_next ON recurring_rules(book_id, is_active, next_date);
+	CREATE INDEX IF NOT EXISTS idx_ai_usage_user_date ON ai_usage_logs(user_id, created_at);
+	CREATE INDEX IF NOT EXISTS idx_books_invite_code ON books(invite_code);
+	`
+	if _, err := db.Exec(newTablesSchema); err != nil {
+		return nil, fmt.Errorf("failed to initialize v0.2.0 tables: %w", err)
+	}
+
+	userMigrations := []struct {
+		col string
+		ddl string
+	}{
+		{"username", "TEXT DEFAULT ''"},
+		{"gateway_uid", "TEXT DEFAULT ''"},
+	}
+	for _, m := range userMigrations {
+		if err := ensureColumn(db, "users", m.col, m.ddl); err != nil {
+			return nil, fmt.Errorf("column migration users.%s failed: %w", m.col, err)
+		}
+	}
+
+	userIndexSQL := `
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_unique
+		ON users(LOWER(username)) WHERE username IS NOT NULL AND username != '';
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_users_gateway_uid_unique
+		ON users(gateway_uid) WHERE gateway_uid IS NOT NULL AND gateway_uid != '';
+	`
+	if _, err := db.Exec(userIndexSQL); err != nil {
+		return nil, fmt.Errorf("failed to create user unique indexes: %w", err)
+	}
+
+	// Backfill invite codes for historical books that lack one
+	if err := backfillBookInviteCodes(db); err != nil {
+		log.Printf("[WARN] backfill invite codes: %v", err)
+	}
+
+	log.Printf("[INFO] Database initialized at %s with WAL + mmap + triggers + v0.2.0 schema", dbPath)
 	return &DB{DB: db, Path: dbPath}, nil
+}
+
+func backfillBookInviteCodes(db *sql.DB) error {
+	rows, err := db.Query(`SELECT id FROM books WHERE invite_code = '' OR invite_code IS NULL`)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+
+	for _, id := range ids {
+		for attempt := 0; attempt < 20; attempt++ {
+			code := "CAT7-" + randomDigits4()
+			var cnt int
+			_ = db.QueryRow(`SELECT count(*) FROM books WHERE invite_code = ?`, code).Scan(&cnt)
+			if cnt == 0 {
+				if _, err := db.Exec(`UPDATE books SET invite_code = ? WHERE id = ?`, code, id); err == nil {
+					break
+				}
+			}
+		}
+	}
+	return nil
 }

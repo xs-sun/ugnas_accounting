@@ -1,18 +1,17 @@
 package handler
 
 import (
-	_ "embed"
 	"encoding/json"
 	"fmt"
 )
 
-// SwaggerDocJSON returns the complete OpenAPI 3.0.0 specification for SevenCats Accounting
+// SwaggerDocJSON returns the complete OpenAPI 3.0.0 specification for SevenCats Accounting v0.2.0
 func SwaggerDocJSON(appID, version string) []byte {
 	doc := map[string]interface{}{
 		"openapi": "3.0.0",
 		"info": map[string]interface{}{
 			"title":       "七喵记账 (SevenCats Accounting) API Documentation",
-			"description": "基于绿联私有云 (UGOS Pro) 的本地私有化多账本记账与家庭资产管理系统 API 文档。\n\n包含多账本管理、多币种与四类钱包资产核算、两级收支分类、智能计算器记账、微信/支付宝账单导入与去重、莫兰迪图表统计、在线热快照等完整功能。",
+			"description": "基于绿联私有云 (UGOS Pro) 的本地私有化多账本记账与 AI 智能财务平台 API 文档（v0.2.0）。\n\n支持双模鉴权（本地邮箱登录 + UGOS 网关）、一/二级分类与分类预算、定时自动记账、AI 聊着记与 OCR 小票识别、深度报表统计、微信/支付宝 CSV 导入导出、SQLite 无锁热快照与轻量隐私保护后台管理。",
 			"version":     version,
 			"contact": map[string]interface{}{
 				"name": "七喵工作室 (xsguyu studio)",
@@ -20,635 +19,196 @@ func SwaggerDocJSON(appID, version string) []byte {
 			},
 		},
 		"servers": []map[string]interface{}{
-			{
-				"url":         "/",
-				"description": "当前 NAS 本地运行实例",
-			},
+			{"url": "/", "description": "当前 NAS 本地运行实例"},
 		},
 		"tags": []map[string]interface{}{
 			{"name": "System", "description": "系统状态与健康检查"},
-			{"name": "Books", "description": "多账本管理与多成员协作 (所有者/编辑者/访客)"},
-			{"name": "Wallets", "description": "资产账户体系 (资金/信用/理财/应收应付 & 转账核算)"},
-			{"name": "Categories & Tags", "description": "两级收支分类树与正交标签体系"},
-			{"name": "Transactions", "description": "核心记账交互、多维流水筛选与凭证附件"},
-			{"name": "Reports", "description": "统计分析大盘、莫兰迪环形图、走势柱状图与成员贡献"},
-			{"name": "Import & Export", "description": "微信/支付宝账单智能解析导入 & .ugledger 专有备份"},
-			{"name": "Snapshots", "description": "SQLite 在线热快照 (VACUUM INTO) 容灾备份与极速恢复"},
+			{"name": "Auth", "description": "邮箱注册、密码/验证码登录与密码找回"},
+			{"name": "User", "description": "个人资料、3D 小猫头像上传与邮箱绑定"},
+			{"name": "Books", "description": "多账本管理、邀请口令加入、邮件邀请与虚拟成员"},
+			{"name": "Wallets", "description": "资产账户体系与动态净资产汇总"},
+			{"name": "Categories & Tags", "description": "一/二级收支分类树与正交标签"},
+			{"name": "Transactions", "description": "流水记账、多维筛选与批量删除"},
+			{"name": "Budgets", "description": "总预算与分分类月度预算水位"},
+			{"name": "Recurring", "description": "周期性定时自动记账规则"},
+			{"name": "Reports", "description": "周/月/年深度统计大盘与走势分析"},
+			{"name": "AI", "description": "AI 聊着记、小票 OCR、财务诊断与模型连通性探测"},
+			{"name": "Admin", "description": "管理中台（仅聚合宏观计量与系统配置，零私人账单访问）"},
+			{"name": "Import & Export", "description": "微信/支付宝账单解析导入与 CSV 导出"},
+			{"name": "Snapshots", "description": "SQLite VACUUM INTO 在线热快照与恢复"},
 		},
 		"paths": map[string]interface{}{
 			"/api/v1/health": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"System"},
-					"summary":     "系统健康检查",
-					"description": "获取当前后端运行状态、应用ID和版本号",
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{
-							"description": "服务正常运行",
-						},
-					},
-				},
+				"get": map[string]interface{}{"tags": []string{"System"}, "summary": "系统健康检查", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "正常"}}},
+			},
+			"/api/v1/auth/send-code": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"Auth"}, "summary": "发送邮箱验证码", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "已发送"}}},
+			},
+			"/api/v1/auth/register": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"Auth"}, "summary": "邮箱注册账号", "responses": map[string]interface{}{"201": map[string]interface{}{"description": "注册成功"}}},
+			},
+			"/api/v1/auth/login": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"Auth"}, "summary": "密码或验证码登录", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "登录成功"}}},
+			},
+			"/api/v1/auth/forgot-password": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"Auth"}, "summary": "邮箱验证码重置密码", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "重置成功"}}},
+			},
+			"/api/v1/user/profile": map[string]interface{}{
+				"get": map[string]interface{}{"tags": []string{"User"}, "summary": "获取个人资料与财务健康指标", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+				"put": map[string]interface{}{"tags": []string{"User"}, "summary": "修改昵称或上传头像 (支持 Base64)", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/user/bind-email": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"User"}, "summary": "绑定邮箱", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "绑定成功"}}},
+			},
+			"/api/v1/avatars/{filename}": map[string]interface{}{
+				"get": map[string]interface{}{"tags": []string{"User"}, "summary": "获取用户上传的本地头像图片", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "图片二进制流"}}},
 			},
 			"/api/v1/books": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"Books"},
-					"summary":     "获取账本列表",
-					"description": "获取当前用户参与的所有账本列表，包括个人账本与家庭共享账本",
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "账本列表返回成功"},
-					},
-				},
-				"post": map[string]interface{}{
-					"tags":        []string{"Books"},
-					"summary":     "创建新账本",
-					"description": "创建新账本并初始化默认成员角色",
-					"requestBody": map[string]interface{}{
-						"required": true,
-						"content": map[string]interface{}{
-							"application/json": map[string]interface{}{
-								"schema": map[string]interface{}{
-									"type": "object",
-									"required": []string{"name"},
-									"properties": map[string]interface{}{
-										"name":        map[string]interface{}{"type": "string", "example": "2026日常家庭账本"},
-										"currency":    map[string]interface{}{"type": "string", "example": "CNY", "default": "CNY"},
-										"description": map[string]interface{}{"type": "string", "example": "家庭日常开支共同维护"},
-									},
-								},
-							},
-						},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "账本创建成功"},
-					},
-				},
+				"get":  map[string]interface{}{"tags": []string{"Books"}, "summary": "获取账本列表 (空时自动初始化默认账本)", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+				"post": map[string]interface{}{"tags": []string{"Books"}, "summary": "创建账本 (含默认一/二级分类、钱包与分类预算)", "responses": map[string]interface{}{"201": map[string]interface{}{"description": "创建成功"}}},
+			},
+			"/api/v1/books/join": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"Books"}, "summary": "通过 CAT7-XXXX 口令加入账本", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "加入成功"}}},
 			},
 			"/api/v1/books/{id}": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"Books"},
-					"summary":     "获取指定账本详情",
-					"parameters": []map[string]interface{}{
-						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "返回账本详情"},
-						"404": map[string]interface{}{"description": "账本不存在"},
-					},
-				},
-				"put": map[string]interface{}{
-					"tags":        []string{"Books"},
-					"summary":     "修改账本信息",
-					"parameters": []map[string]interface{}{
-						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"requestBody": map[string]interface{}{
-						"required": true,
-						"content": map[string]interface{}{
-							"application/json": map[string]interface{}{
-								"schema": map[string]interface{}{
-									"type": "object",
-									"properties": map[string]interface{}{
-										"name":        map[string]interface{}{"type": "string"},
-										"currency":    map[string]interface{}{"type": "string"},
-										"description": map[string]interface{}{"type": "string"},
-									},
-								},
-							},
-						},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "修改成功"},
-					},
-				},
-				"delete": map[string]interface{}{
-					"tags":        []string{"Books"},
-					"summary":     "删除账本 (深层入口 & 权限核验)",
-					"parameters": []map[string]interface{}{
-						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "账本已安全删除"},
-					},
-				},
+				"get":    map[string]interface{}{"tags": []string{"Books"}, "summary": "获取账本详情", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+				"put":    map[string]interface{}{"tags": []string{"Books"}, "summary": "更新账本信息", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+				"delete": map[string]interface{}{"tags": []string{"Books"}, "summary": "删除账本", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
 			},
-			"/api/v1/books/{id}/members": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"Books"},
-					"summary":     "获取账本成员列表",
-					"parameters": []map[string]interface{}{
-						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "返回成员列表及角色 (owner/editor/viewer)"},
-					},
-				},
-				"post": map[string]interface{}{
-					"tags":        []string{"Books"},
-					"summary":     "添加/邀请账本成员",
-					"parameters": []map[string]interface{}{
-						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"requestBody": map[string]interface{}{
-						"required": true,
-						"content": map[string]interface{}{
-							"application/json": map[string]interface{}{
-								"schema": map[string]interface{}{
-									"type": "object",
-									"required": []string{"user_id", "user_name"},
-									"properties": map[string]interface{}{
-										"user_id":   map[string]interface{}{"type": "string", "example": "family_member_01"},
-										"user_name": map[string]interface{}{"type": "string", "example": "老婆"},
-										"role":      map[string]interface{}{"type": "string", "enum": []string{"owner", "editor", "viewer"}, "default": "editor"},
-									},
-								},
-							},
-						},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "成员添加成功"},
-					},
-				},
+			"/api/v1/books/{id}/invite-email": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"Books"}, "summary": "通过邮箱邀请成员加入账本", "responses": map[string]interface{}{"201": map[string]interface{}{"description": "成功"}}},
 			},
-			"/api/v1/books/{id}/members/{userId}": map[string]interface{}{
-				"delete": map[string]interface{}{
-					"tags":        []string{"Books"},
-					"summary":     "移除账本成员",
-					"parameters": []map[string]interface{}{
-						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-						{"name": "userId", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "成员已移除"},
-					},
-				},
+			"/api/v1/books/{id}/virtual-members": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"Books"}, "summary": "添加虚拟成员", "responses": map[string]interface{}{"201": map[string]interface{}{"description": "成功"}}},
 			},
 			"/api/v1/wallets": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"Wallets"},
-					"summary":     "获取资产账户列表",
-					"parameters": []map[string]interface{}{
-						{"name": "book_id", "in": "query", "schema": map[string]interface{}{"type": "string"}, "description": "按账本筛选"},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "账户列表返回成功 (含余额, 额度, 分类图标)"},
-					},
-				},
-				"post": map[string]interface{}{
-					"tags":        []string{"Wallets"},
-					"summary":     "创建新资产账户",
-					"requestBody": map[string]interface{}{
-						"required": true,
-						"content": map[string]interface{}{
-							"application/json": map[string]interface{}{
-								"schema": map[string]interface{}{
-									"type": "object",
-									"required": []string{"name", "type"},
-									"properties": map[string]interface{}{
-										"name":            map[string]interface{}{"type": "string", "example": "招商银行储蓄卡"},
-										"type":            map[string]interface{}{"type": "string", "enum": []string{"cash", "credit", "invest", "debt"}, "example": "cash"},
-										"balance":         map[string]interface{}{"type": "integer", "description": "初始金额 (单位: 分)", "example": 500000},
-										"credit_limit":    map[string]interface{}{"type": "integer", "description": "信用额度 (单位: 分)", "example": 2000000},
-										"currency":        map[string]interface{}{"type": "string", "example": "CNY", "default": "CNY"},
-										"icon":            map[string]interface{}{"type": "string", "example": "bank"},
-										"color":           map[string]interface{}{"type": "string", "example": "#0E8C7F"},
-										"include_in_net":  map[string]interface{}{"type": "boolean", "default": true},
-									},
-								},
-							},
-						},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "账户创建成功"},
-					},
-				},
+				"get":  map[string]interface{}{"tags": []string{"Wallets"}, "summary": "获取账户列表", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+				"post": map[string]interface{}{"tags": []string{"Wallets"}, "summary": "创建账户", "responses": map[string]interface{}{"201": map[string]interface{}{"description": "成功"}}},
 			},
 			"/api/v1/wallets/{id}": map[string]interface{}{
-				"put": map[string]interface{}{
-					"tags":        []string{"Wallets"},
-					"summary":     "更新账户信息与余额",
-					"parameters": []map[string]interface{}{
-						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "账户已更新"},
-					},
-				},
-				"delete": map[string]interface{}{
-					"tags":        []string{"Wallets"},
-					"summary":     "删除资产账户",
-					"parameters": []map[string]interface{}{
-						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "账户已删除"},
-					},
-				},
-			},
-			"/api/v1/wallets/transfer": map[string]interface{}{
-				"post": map[string]interface{}{
-					"tags":        []string{"Wallets"},
-					"summary":     "账户间转账 (原子级资金划转 & 手续费扣减)",
-					"requestBody": map[string]interface{}{
-						"required": true,
-						"content": map[string]interface{}{
-							"application/json": map[string]interface{}{
-								"schema": map[string]interface{}{
-									"type": "object",
-									"required": []string{"from_wallet_id", "to_wallet_id", "amount"},
-									"properties": map[string]interface{}{
-										"book_id":        map[string]interface{}{"type": "string"},
-										"from_wallet_id": map[string]interface{}{"type": "string", "example": "wallet_alipay"},
-										"to_wallet_id":   map[string]interface{}{"type": "string", "example": "wallet_cmb"},
-										"amount":         map[string]interface{}{"type": "integer", "description": "转账金额 (分)", "example": 100000},
-										"fee":            map[string]interface{}{"type": "integer", "description": "转账手续费 (分)", "example": 100},
-										"remark":         map[string]interface{}{"type": "string", "example": "余额提现到招行"},
-										"date":           map[string]interface{}{"type": "string", "example": "2026-09-07"},
-									},
-								},
-							},
-						},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "转账成功"},
-					},
-				},
+				"put":    map[string]interface{}{"tags": []string{"Wallets"}, "summary": "更新账户 (含余额校准)", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+				"delete": map[string]interface{}{"tags": []string{"Wallets"}, "summary": "归档账户", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
 			},
 			"/api/v1/wallets/summary": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"Wallets"},
-					"summary":     "获取资产概览 (总资产 / 总负债 / 净资产动态核算)",
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "资产统计返回成功"},
-					},
-				},
+				"get": map[string]interface{}{"tags": []string{"Wallets"}, "summary": "获取资产负债汇总", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
 			},
 			"/api/v1/categories": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"Categories & Tags"},
-					"summary":     "获取收支两级分类树",
-					"parameters": []map[string]interface{}{
-						{"name": "type", "in": "query", "schema": map[string]interface{}{"type": "string", "enum": []string{"expense", "income"}}, "description": "分类类型"},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "两级分类树返回成功"},
-					},
-				},
-				"post": map[string]interface{}{
-					"tags":        []string{"Categories & Tags"},
-					"summary":     "创建自定义收支分类",
-					"requestBody": map[string]interface{}{
-						"required": true,
-						"content": map[string]interface{}{
-							"application/json": map[string]interface{}{
-								"schema": map[string]interface{}{
-									"type": "object",
-									"required": []string{"name", "type"},
-									"properties": map[string]interface{}{
-										"name":      map[string]interface{}{"type": "string", "example": "撸猫专项"},
-										"type":      map[string]interface{}{"type": "string", "enum": []string{"expense", "income"}},
-										"parent_id": map[string]interface{}{"type": "string", "description": "一级分类ID (留空则为一级分类)"},
-										"icon":      map[string]interface{}{"type": "string", "example": "cat"},
-										"color":     map[string]interface{}{"type": "string", "example": "#D4A373"},
-									},
-								},
-							},
-						},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "分类创建成功"},
-					},
-				},
+				"get":  map[string]interface{}{"tags": []string{"Categories & Tags"}, "summary": "获取一/二级分类列表", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+				"post": map[string]interface{}{"tags": []string{"Categories & Tags"}, "summary": "创建分类", "responses": map[string]interface{}{"201": map[string]interface{}{"description": "成功"}}},
 			},
 			"/api/v1/categories/{id}": map[string]interface{}{
-				"put": map[string]interface{}{
-					"tags":        []string{"Categories & Tags"},
-					"summary":     "修改分类信息",
-					"parameters": []map[string]interface{}{
-						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "修改成功"},
-					},
-				},
-				"delete": map[string]interface{}{
-					"tags":        []string{"Categories & Tags"},
-					"summary":     "删除分类",
-					"parameters": []map[string]interface{}{
-						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "删除成功"},
-					},
-				},
-			},
-			"/api/v1/tags": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"Categories & Tags"},
-					"summary":     "获取标签列表",
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "标签列表返回成功"},
-					},
-				},
-				"post": map[string]interface{}{
-					"tags":        []string{"Categories & Tags"},
-					"summary":     "创建新标签",
-					"requestBody": map[string]interface{}{
-						"required": true,
-						"content": map[string]interface{}{
-							"application/json": map[string]interface{}{
-								"schema": map[string]interface{}{
-									"type": "object",
-									"required": []string{"name"},
-									"properties": map[string]interface{}{
-										"name":  map[string]interface{}{"type": "string", "example": "待报销"},
-										"color": map[string]interface{}{"type": "string", "example": "#2A9D8F"},
-									},
-								},
-							},
-						},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "标签创建成功"},
-					},
-				},
+				"put":    map[string]interface{}{"tags": []string{"Categories & Tags"}, "summary": "修改分类", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+				"delete": map[string]interface{}{"tags": []string{"Categories & Tags"}, "summary": "删除分类并同步清理子分类", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
 			},
 			"/api/v1/transactions": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"Transactions"},
-					"summary":     "多维聚合查询交易流水列表",
-					"parameters": []map[string]interface{}{
-						{"name": "book_id", "in": "query", "schema": map[string]interface{}{"type": "string"}, "description": "账本ID"},
-						{"name": "type", "in": "query", "schema": map[string]interface{}{"type": "string", "enum": []string{"expense", "income", "transfer"}}, "description": "交易类型"},
-						{"name": "start_date", "in": "query", "schema": map[string]interface{}{"type": "string", "example": "2026-09-01"}, "description": "起始日期"},
-						{"name": "end_date", "in": "query", "schema": map[string]interface{}{"type": "string", "example": "2026-09-30"}, "description": "截止日期"},
-						{"name": "category_id", "in": "query", "schema": map[string]interface{}{"type": "string"}, "description": "分类ID"},
-						{"name": "wallet_id", "in": "query", "schema": map[string]interface{}{"type": "string"}, "description": "账户ID"},
-						{"name": "keyword", "in": "query", "schema": map[string]interface{}{"type": "string"}, "description": "模糊检索备注与商户"},
-						{"name": "page", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 1}},
-						{"name": "page_size", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 50}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "流水列表返回成功 (含日分组汇总与分页)"},
-					},
-				},
-				"post": map[string]interface{}{
-					"tags":        []string{"Transactions"},
-					"summary":     "新增记账流水 (支出 / 收入 / 转账)",
-					"requestBody": map[string]interface{}{
-						"required": true,
-						"content": map[string]interface{}{
-							"application/json": map[string]interface{}{
-								"schema": map[string]interface{}{
-									"type": "object",
-									"required": []string{"book_id", "type", "amount", "wallet_id", "date"},
-									"properties": map[string]interface{}{
-										"book_id":        map[string]interface{}{"type": "string"},
-										"type":           map[string]interface{}{"type": "string", "enum": []string{"expense", "income", "transfer"}},
-										"amount":         map[string]interface{}{"type": "integer", "description": "金额 (分)", "example": 3800},
-										"category_id":    map[string]interface{}{"type": "string", "example": "cat_catering_lunch"},
-										"wallet_id":      map[string]interface{}{"type": "string", "example": "wallet_alipay"},
-										"to_wallet_id":   map[string]interface{}{"type": "string", "description": "转账入账账户 (转账必填)"},
-										"date":           map[string]interface{}{"type": "string", "example": "2026-09-07"},
-										"time":           map[string]interface{}{"type": "string", "example": "12:30:00"},
-										"remark":         map[string]interface{}{"type": "string", "example": "日料工作午餐"},
-										"merchant":       map[string]interface{}{"type": "string", "example": "一乐拉面"},
-										"tags":           map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-									},
-								},
-							},
-						},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "记账成功，自动联动账户余额与预聚合缓存"},
-					},
-				},
+				"get":  map[string]interface{}{"tags": []string{"Transactions"}, "summary": "多维筛选交易流水 (支持 search、一级分类穿透及 page_size<=500)", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+				"post": map[string]interface{}{"tags": []string{"Transactions"}, "summary": "新增流水", "responses": map[string]interface{}{"201": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/transactions/batch-delete": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"Transactions"}, "summary": "批量删除流水并原子回滚余额", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
 			},
 			"/api/v1/transactions/{id}": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"Transactions"},
-					"summary":     "获取单笔流水详情",
-					"parameters": []map[string]interface{}{
-						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "详情返回成功"},
-					},
-				},
-				"put": map[string]interface{}{
-					"tags":        []string{"Transactions"},
-					"summary":     "修改单笔流水 (自动回滚旧余额并重算新余额)",
-					"parameters": []map[string]interface{}{
-						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "修改成功"},
-					},
-				},
-				"delete": map[string]interface{}{
-					"tags":        []string{"Transactions"},
-					"summary":     "删除单笔流水 (自动恢复对应账户余额)",
-					"parameters": []map[string]interface{}{
-						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "删除成功"},
-					},
-				},
+				"get":    map[string]interface{}{"tags": []string{"Transactions"}, "summary": "获取流水详情", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+				"put":    map[string]interface{}{"tags": []string{"Transactions"}, "summary": "更新流水", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+				"delete": map[string]interface{}{"tags": []string{"Transactions"}, "summary": "删除流水", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
 			},
-			"/api/v1/transactions/{id}/attachment": map[string]interface{}{
-				"post": map[string]interface{}{
-					"tags":        []string{"Transactions"},
-					"summary":     "上传小票 / 发票凭证图片附件",
-					"parameters": []map[string]interface{}{
-						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"requestBody": map[string]interface{}{
-						"content": map[string]interface{}{
-							"multipart/form-data": map[string]interface{}{
-								"schema": map[string]interface{}{
-									"type": "object",
-									"properties": map[string]interface{}{
-										"file": map[string]interface{}{"type": "string", "format": "binary"},
-									},
-								},
-							},
-						},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "上传成功，返回附件存储相对路径"},
-					},
-				},
-				"get": map[string]interface{}{
-					"tags":        []string{"Transactions"},
-					"summary":     "下载/查看凭证附件图片",
-					"parameters": []map[string]interface{}{
-						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "返回图片二进制流"},
-					},
-				},
+			"/api/v1/budgets": map[string]interface{}{
+				"get": map[string]interface{}{"tags": []string{"Budgets"}, "summary": "获取月度总预算及分分类预算执行水位", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
 			},
-			"/api/v1/reports/overview": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"Reports"},
-					"summary":     "获取收支与结余概览大盘 KPI",
-					"parameters": []map[string]interface{}{
-						{"name": "book_id", "in": "query", "schema": map[string]interface{}{"type": "string"}},
-						{"name": "start_date", "in": "query", "schema": map[string]interface{}{"type": "string"}},
-						{"name": "end_date", "in": "query", "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "返回总收入、总支出、净结余、日均支出及同比环比指标"},
-					},
-				},
+			"/api/v1/budgets/total": map[string]interface{}{
+				"put": map[string]interface{}{"tags": []string{"Budgets"}, "summary": "修改账本总预算", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
 			},
-			"/api/v1/reports/categories": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"Reports"},
-					"summary":     "分类收支结构与占比 (莫兰迪环形图)",
-					"parameters": []map[string]interface{}{
-						{"name": "book_id", "in": "query", "schema": map[string]interface{}{"type": "string"}},
-						{"name": "type", "in": "query", "schema": map[string]interface{}{"type": "string", "enum": []string{"expense", "income"}}},
-						{"name": "start_date", "in": "query", "schema": map[string]interface{}{"type": "string"}},
-						{"name": "end_date", "in": "query", "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "返回按分类聚合的金额、百分比、排行榜及图标色值"},
-					},
-				},
+			"/api/v1/budgets/category": map[string]interface{}{
+				"put": map[string]interface{}{"tags": []string{"Budgets"}, "summary": "设置或修改分类预算上限", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/recurring": map[string]interface{}{
+				"get":  map[string]interface{}{"tags": []string{"Recurring"}, "summary": "获取定时记账规则列表", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+				"post": map[string]interface{}{"tags": []string{"Recurring"}, "summary": "新建定时记账规则", "responses": map[string]interface{}{"201": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/recurring/{id}": map[string]interface{}{
+				"put":    map[string]interface{}{"tags": []string{"Recurring"}, "summary": "更新定时记账规则", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+				"delete": map[string]interface{}{"tags": []string{"Recurring"}, "summary": "删除定时记账规则", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/recurring/{id}/toggle": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"Recurring"}, "summary": "启停定时记账规则", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/reports/stats": map[string]interface{}{
+				"get": map[string]interface{}{"tags": []string{"Reports"}, "summary": "获取周/月/年深度统计分析（子分类归并一级分类）", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/reports/monthly": map[string]interface{}{
+				"get": map[string]interface{}{"tags": []string{"Reports"}, "summary": "获取月度收支报表", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
 			},
 			"/api/v1/reports/trend": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"Reports"},
-					"summary":     "收支双色柱状走势与净结余月度曲线",
-					"parameters": []map[string]interface{}{
-						{"name": "book_id", "in": "query", "schema": map[string]interface{}{"type": "string"}},
-						{"name": "months", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 6}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "返回各月份收入、支出与结余数据序列"},
-					},
-				},
+				"get": map[string]interface{}{"tags": []string{"Reports"}, "summary": "获取月度收支趋势", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
 			},
-			"/api/v1/reports/members": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"Reports"},
-					"summary":     "家庭成员支出与贡献分布",
-					"parameters": []map[string]interface{}{
-						{"name": "book_id", "in": "query", "schema": map[string]interface{}{"type": "string"}},
-						{"name": "start_date", "in": "query", "schema": map[string]interface{}{"type": "string"}},
-						{"name": "end_date", "in": "query", "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "返回各成员记账总额与占比结构"},
-					},
-				},
+			"/api/v1/reports/daily": map[string]interface{}{
+				"get": map[string]interface{}{"tags": []string{"Reports"}, "summary": "获取日度收支明细", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
 			},
-			"/api/v1/import/parse": map[string]interface{}{
-				"post": map[string]interface{}{
-					"tags":        []string{"Import & Export"},
-					"summary":     "智能解析微信 / 支付宝 CSV 账单",
-					"description": "自动识别 GBK / UTF-8 编码，过滤转账还款，自动匹配预置分类并生成防重哈希",
-					"requestBody": map[string]interface{}{
-						"content": map[string]interface{}{
-							"multipart/form-data": map[string]interface{}{
-								"schema": map[string]interface{}{
-									"type": "object",
-									"properties": map[string]interface{}{
-										"file": map[string]interface{}{"type": "string", "format": "binary"},
-										"book_id": map[string]interface{}{"type": "string"},
-										"source": map[string]interface{}{"type": "string", "enum": []string{"auto", "alipay", "wechat"}},
-									},
-								},
-							},
-						},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "返回已智能分类的账单预览列表与重复条目标记"},
-					},
-				},
+			"/api/v1/ai/chat": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"AI"}, "summary": "AI 自然语言/语音记账与问答", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
 			},
-			"/api/v1/import/commit": map[string]interface{}{
-				"post": map[string]interface{}{
-					"tags":        []string{"Import & Export"},
-					"summary":     "批量提交入库导入的交易记录",
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "批量入库完成，返回成功与跳过计数"},
-					},
-				},
+			"/api/v1/ai/ocr": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"AI"}, "summary": "小票/账单图片 OCR 识别", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
 			},
-			"/api/v1/export/ugledger": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"Import & Export"},
-					"summary":     "导出账本全量专有格式归档 (.ugledger)",
-					"parameters": []map[string]interface{}{
-						{"name": "book_id", "in": "query", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "下载包含元数据、全量流水与小票附件的压缩包"},
-					},
-				},
+			"/api/v1/ai/insights": map[string]interface{}{
+				"get": map[string]interface{}{"tags": []string{"AI"}, "summary": "AI 财务诊断与省钱建议", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
 			},
-			"/api/v1/import/ugledger": map[string]interface{}{
-				"post": map[string]interface{}{
-					"tags":        []string{"Import & Export"},
-					"summary":     "导入 / 恢复 .ugledger 专有账本备份",
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "账本与小票凭证恢复成功"},
-					},
-				},
+			"/api/v1/ai/test": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"AI"}, "summary": "测试 AI 模型服务连通性", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/admin/overview": map[string]interface{}{
+				"get": map[string]interface{}{"tags": []string{"Admin"}, "summary": "管理中台宏观统计概览 (零私人账单访问)", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/admin/ai-config": map[string]interface{}{
+				"get": map[string]interface{}{"tags": []string{"Admin"}, "summary": "获取 AI 配置", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+				"put": map[string]interface{}{"tags": []string{"Admin"}, "summary": "更新 AI 配置", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/admin/ai-usage": map[string]interface{}{
+				"get": map[string]interface{}{"tags": []string{"Admin"}, "summary": "查询分用户 AI 调用与 Token 消耗", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/admin/reg-config": map[string]interface{}{
+				"get": map[string]interface{}{"tags": []string{"Admin"}, "summary": "获取注册策略配置", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+				"put": map[string]interface{}{"tags": []string{"Admin"}, "summary": "更新注册策略配置", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/admin/users": map[string]interface{}{
+				"get": map[string]interface{}{"tags": []string{"Admin"}, "summary": "查询系统用户列表", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/admin/users/{id}": map[string]interface{}{
+				"put": map[string]interface{}{"tags": []string{"Admin"}, "summary": "调整用户角色、AI 日限额或启停状态", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/admin/system-config": map[string]interface{}{
+				"get": map[string]interface{}{"tags": []string{"Admin"}, "summary": "获取系统自动备份与 SMTP 邮箱配置", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+				"put": map[string]interface{}{"tags": []string{"Admin"}, "summary": "更新系统自动备份与 SMTP 邮箱配置", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/admin/smtp-test": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"Admin"}, "summary": "测试 SMTP 邮件发送", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/export": map[string]interface{}{
+				"get": map[string]interface{}{"tags": []string{"Import & Export"}, "summary": "导出账本流水为 CSV", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "CSV 数据流"}}},
+			},
+			"/api/v1/imports/wechat": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"Import & Export"}, "summary": "解析微信 CSV 账单", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/imports/alipay": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"Import & Export"}, "summary": "解析支付宝 CSV 账单", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/imports/commit": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"Import & Export"}, "summary": "批量提交导入流水", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
 			},
 			"/api/v1/snapshots": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"Snapshots"},
-					"summary":     "获取历史热快照列表",
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "返回本地容灾快照列表及大小"},
-					},
-				},
-				"post": map[string]interface{}{
-					"tags":        []string{"Snapshots"},
-					"summary":     "触发在线无锁热快照备份 (VACUUM INTO)",
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "热快照生成成功"},
-					},
-				},
+				"get": map[string]interface{}{"tags": []string{"Snapshots"}, "summary": "获取历史热快照列表", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/snapshots/create": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"Snapshots"}, "summary": "创建热快照", "responses": map[string]interface{}{"201": map[string]interface{}{"description": "成功"}}},
+			},
+			"/api/v1/snapshots/restore": map[string]interface{}{
+				"post": map[string]interface{}{"tags": []string{"Snapshots"}, "summary": "上传归档热恢复", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
 			},
 			"/api/v1/snapshots/{id}": map[string]interface{}{
-				"delete": map[string]interface{}{
-					"tags":        []string{"Snapshots"},
-					"summary":     "删除历史热快照",
-					"parameters": []map[string]interface{}{
-						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "删除成功"},
-					},
-				},
+				"delete": map[string]interface{}{"tags": []string{"Snapshots"}, "summary": "删除热快照", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "成功"}}},
 			},
 			"/api/v1/snapshots/{id}/download": map[string]interface{}{
-				"get": map[string]interface{}{
-					"tags":        []string{"Snapshots"},
-					"summary":     "下载热快照备份文件",
-					"parameters": []map[string]interface{}{
-						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "返回数据库快照文件流"},
-					},
-				},
-			},
-			"/api/v1/snapshots/{id}/restore": map[string]interface{}{
-				"post": map[string]interface{}{
-					"tags":        []string{"Snapshots"},
-					"summary":     "热快照数据极速回滚恢复",
-					"parameters": []map[string]interface{}{
-						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{"description": "数据恢复成功"},
-					},
-				},
+				"get": map[string]interface{}{"tags": []string{"Snapshots"}, "summary": "下载热快照文件", "responses": map[string]interface{}{"200": map[string]interface{}{"description": "二进制文件流"}}},
 			},
 		},
 	}
@@ -678,13 +238,13 @@ func SwaggerUIHTML(docURL, title string) string {
       display: none !important;
     }
     .custom-header {
-      background: linear-gradient(135deg, #0E8C7F 0%%, #14B8A6 100%%);
+      background: linear-gradient(135deg, #DE8A1E 0%%, #EC9B2E 100%%);
       color: white;
       padding: 16px 24px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      box-shadow: 0 2px 8px rgba(14, 140, 127, 0.2);
+      box-shadow: 0 2px 8px rgba(222, 138, 30, 0.25);
     }
     .custom-header .brand {
       display: flex;
@@ -714,17 +274,17 @@ func SwaggerUIHTML(docURL, title string) string {
       background: rgba(255, 255, 255, 0.35);
     }
     .swagger-ui .info .title {
-      color: #134E4A;
+      color: #18181B;
     }
     .swagger-ui .btn.authorize {
-      color: #0E8C7F;
-      border-color: #0E8C7F;
+      color: #DE8A1E;
+      border-color: #DE8A1E;
     }
     .swagger-ui .opblock.opblock-get .opblock-summary-method {
-      background: #0E8C7F;
+      background: #2F78A8;
     }
     .swagger-ui .opblock.opblock-post .opblock-summary-method {
-      background: #2A9D8F;
+      background: #DE8A1E;
     }
   </style>
 </head>

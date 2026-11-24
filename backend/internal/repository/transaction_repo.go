@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 
 	"com.xsguyu.accounting/backend/internal/model"
 	"github.com/google/uuid"
@@ -30,7 +32,6 @@ func (r *TransactionRepo) CreateTransaction(ctx context.Context, tx *model.Trans
 		tx.ID = uuid.NewString()
 	}
 
-	// Validate foreign keys exist
 	var dummy string
 	if err := dbTx.QueryRowContext(ctx, `SELECT id FROM books WHERE id = ?`, tx.BookID).Scan(&dummy); err != nil {
 		return fmt.Errorf("invalid book_id: %w", err)
@@ -49,20 +50,29 @@ func (r *TransactionRepo) CreateTransaction(ctx context.Context, tx *model.Trans
 		}
 	}
 
-	// Insert transaction
+	incBudgetInt := 1
+	if !tx.IncludeBudget {
+		incBudgetInt = 0
+	}
+	reimburseInt := 0
+	if tx.Reimburse {
+		reimburseInt = 1
+	}
+
 	insQuery := `
 	INSERT INTO transactions (
-		id, book_id, type, amount, date, wallet_id, to_wallet_id, category_id, note, order_no, created_by
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		id, book_id, type, amount, date, tx_time, wallet_id, to_wallet_id, category_id,
+		title, sub_category, note, order_no, include_budget, reimburse, created_by
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	_, err = dbTx.ExecContext(ctx, insQuery,
-		tx.ID, tx.BookID, tx.Type, tx.Amount, tx.Date, tx.WalletID, tx.ToWalletID, tx.CategoryID, tx.Note, tx.OrderNo, tx.CreatedBy,
+		tx.ID, tx.BookID, tx.Type, tx.Amount, tx.Date, tx.TxTime, tx.WalletID, tx.ToWalletID, tx.CategoryID,
+		tx.Title, tx.SubCategory, tx.Note, tx.OrderNo, incBudgetInt, reimburseInt, tx.CreatedBy,
 	)
 	if err != nil {
 		return err
 	}
 
-	// Balance Linkage
 	switch tx.Type {
 	case "expense":
 		_, err = dbTx.ExecContext(ctx, `UPDATE wallets SET balance = balance - ?, updated_at = datetime('now') WHERE id = ?`, tx.Amount, tx.WalletID)
@@ -81,7 +91,6 @@ func (r *TransactionRepo) CreateTransaction(ctx context.Context, tx *model.Trans
 		return err
 	}
 
-	// Tag linkages
 	for _, tagID := range tagIDs {
 		_, err = dbTx.ExecContext(ctx, `INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?, ?)`, tx.ID, tagID)
 		if err != nil {
@@ -100,9 +109,10 @@ func (r *TransactionRepo) AddAttachment(ctx context.Context, id, txID, fileName,
 
 func (r *TransactionRepo) GetTransaction(ctx context.Context, txID string) (*model.Transaction, error) {
 	query := `
-	SELECT t.id, t.book_id, t.type, t.amount, t.date, t.wallet_id, t.to_wallet_id, t.category_id,
-	       t.note, t.order_no, t.created_by, t.created_at, t.updated_at,
-	       COALESCE(c.name, ''), COALESCE(c.icon, ''), COALESCE(c.color, ''),
+	SELECT t.id, t.book_id, t.type, t.amount, t.date, COALESCE(t.tx_time, ''), t.wallet_id, t.to_wallet_id, t.category_id,
+	       COALESCE(t.title, ''), COALESCE(t.sub_category, ''), COALESCE(t.note, ''), COALESCE(t.order_no, ''),
+	       COALESCE(t.include_budget, 1), COALESCE(t.reimburse, 0), t.created_by, t.created_at, t.updated_at,
+	       COALESCE(c.name, ''), COALESCE(c.icon, ''), COALESCE(c.color, ''), COALESCE(c.bg_color, ''),
 	       COALESCE(w.name, ''), COALESCE(tw.name, '')
 	FROM transactions t
 	LEFT JOIN categories c ON t.category_id = c.id
@@ -112,12 +122,14 @@ func (r *TransactionRepo) GetTransaction(ctx context.Context, txID string) (*mod
 	`
 	var tx model.Transaction
 	var toW, catID sql.NullString
+	var incBudgetInt, reimburseInt int
 	tx.Tags = []model.Tag{}
 
 	err := r.db.QueryRowContext(ctx, query, txID).Scan(
-		&tx.ID, &tx.BookID, &tx.Type, &tx.Amount, &tx.Date, &tx.WalletID, &toW, &catID,
-		&tx.Note, &tx.OrderNo, &tx.CreatedBy, &tx.CreatedAt, &tx.UpdatedAt,
-		&tx.CategoryName, &tx.CategoryIcon, &tx.CategoryColor,
+		&tx.ID, &tx.BookID, &tx.Type, &tx.Amount, &tx.Date, &tx.TxTime, &tx.WalletID, &toW, &catID,
+		&tx.Title, &tx.SubCategory, &tx.Note, &tx.OrderNo,
+		&incBudgetInt, &reimburseInt, &tx.CreatedBy, &tx.CreatedAt, &tx.UpdatedAt,
+		&tx.CategoryName, &tx.CategoryIcon, &tx.CategoryColor, &tx.CategoryBgColor,
 		&tx.WalletName, &tx.ToWalletName,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -132,12 +144,19 @@ func (r *TransactionRepo) GetTransaction(ctx context.Context, txID string) (*mod
 	if catID.Valid {
 		tx.CategoryID = &catID.String
 	}
+	tx.IncludeBudget = incBudgetInt == 1
+	tx.Reimburse = reimburseInt == 1
 
-	// Fetch tags
+	tx.Tags = r.fetchTxTags(ctx, txID)
+	return &tx, nil
+}
+
+func (r *TransactionRepo) fetchTxTags(ctx context.Context, txID string) []model.Tag {
+	tags := []model.Tag{}
 	tagRows, err := r.db.QueryContext(ctx, `
-		SELECT t.id, t.book_id, t.name, t.color, t.created_at
-		FROM tags t
-		JOIN transaction_tags tt ON t.id = tt.tag_id
+		SELECT tg.id, tg.book_id, tg.name, tg.color, tg.created_at
+		FROM tags tg
+		JOIN transaction_tags tt ON tg.id = tt.tag_id
 		WHERE tt.transaction_id = ?
 	`, txID)
 	if err == nil {
@@ -145,15 +164,14 @@ func (r *TransactionRepo) GetTransaction(ctx context.Context, txID string) (*mod
 		for tagRows.Next() {
 			var tag model.Tag
 			if err := tagRows.Scan(&tag.ID, &tag.BookID, &tag.Name, &tag.Color, &tag.CreatedAt); err == nil {
-				tx.Tags = append(tx.Tags, tag)
+				tags = append(tags, tag)
 			}
 		}
 	}
-
-	return &tx, nil
+	return tags
 }
 
-func (r *TransactionRepo) ListTransactions(ctx context.Context, bookID string, walletID, categoryID, txType, startDate, endDate string, limit, offset int) ([]model.Transaction, int, error) {
+func (r *TransactionRepo) ListTransactions(ctx context.Context, bookID string, walletID, categoryID, txType, startDate, endDate, search string, limit, offset int) ([]model.Transaction, int, error) {
 	where := []string{"1=1"}
 	var args []interface{}
 
@@ -166,8 +184,8 @@ func (r *TransactionRepo) ListTransactions(ctx context.Context, bookID string, w
 		args = append(args, walletID, walletID)
 	}
 	if categoryID != "" {
-		where = append(where, "t.category_id = ?")
-		args = append(args, categoryID)
+		where = append(where, "(t.category_id = ? OR c.parent_id = ?)")
+		args = append(args, categoryID, categoryID)
 	}
 	if txType != "" {
 		where = append(where, "t.type = ?")
@@ -181,11 +199,22 @@ func (r *TransactionRepo) ListTransactions(ctx context.Context, bookID string, w
 		where = append(where, "t.date <= ?")
 		args = append(args, endDate)
 	}
+	if strings.TrimSpace(search) != "" {
+		kw := "%" + strings.TrimSpace(search) + "%"
+		where = append(where, "(t.title LIKE ? OR t.note LIKE ? OR t.sub_category LIKE ? OR c.name LIKE ? OR w.name LIKE ?)")
+		args = append(args, kw, kw, kw, kw, kw)
+	}
 
 	whereClause := strings.Join(where, " AND ")
 
 	var total int
-	countQuery := fmt.Sprintf("SELECT count(*) FROM transactions t WHERE %s", whereClause)
+	countQuery := fmt.Sprintf(`
+		SELECT count(*)
+		FROM transactions t
+		LEFT JOIN categories c ON t.category_id = c.id
+		LEFT JOIN wallets w ON t.wallet_id = w.id
+		WHERE %s
+	`, whereClause)
 	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
@@ -195,38 +224,41 @@ func (r *TransactionRepo) ListTransactions(ctx context.Context, bookID string, w
 	}
 
 	query := fmt.Sprintf(`
-	SELECT t.id, t.book_id, t.type, t.amount, t.date, t.wallet_id, t.to_wallet_id, t.category_id,
-	       t.note, t.order_no, t.created_by, t.created_at, t.updated_at,
-	       COALESCE(c.name, ''), COALESCE(c.icon, ''), COALESCE(c.color, ''),
+	SELECT t.id, t.book_id, t.type, t.amount, t.date, COALESCE(t.tx_time, ''), t.wallet_id, t.to_wallet_id, t.category_id,
+	       COALESCE(t.title, ''), COALESCE(t.sub_category, ''), COALESCE(t.note, ''), COALESCE(t.order_no, ''),
+	       COALESCE(t.include_budget, 1), COALESCE(t.reimburse, 0), t.created_by, t.created_at, t.updated_at,
+	       COALESCE(c.name, ''), COALESCE(c.icon, ''), COALESCE(c.color, ''), COALESCE(c.bg_color, ''),
 	       COALESCE(w.name, ''), COALESCE(tw.name, '')
 	FROM transactions t
 	LEFT JOIN categories c ON t.category_id = c.id
 	LEFT JOIN wallets w ON t.wallet_id = w.id
 	LEFT JOIN wallets tw ON t.to_wallet_id = tw.id
 	WHERE %s
-	ORDER BY t.date DESC, t.created_at DESC
+	ORDER BY t.date DESC, COALESCE(t.tx_time, '') DESC, t.created_at DESC
 	LIMIT ? OFFSET ?
 	`, whereClause)
 
-	argsWithLimit := append(args, limit, offset)
+	argsWithLimit := append(append([]interface{}{}, args...), limit, offset)
 	rows, err := r.db.QueryContext(ctx, query, argsWithLimit...)
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
 
 	transactions := make([]model.Transaction, 0)
 	for rows.Next() {
 		var tx model.Transaction
 		var toW, catID sql.NullString
+		var incBudgetInt, reimburseInt int
 		tx.Tags = []model.Tag{}
 
 		if err := rows.Scan(
-			&tx.ID, &tx.BookID, &tx.Type, &tx.Amount, &tx.Date, &tx.WalletID, &toW, &catID,
-			&tx.Note, &tx.OrderNo, &tx.CreatedBy, &tx.CreatedAt, &tx.UpdatedAt,
-			&tx.CategoryName, &tx.CategoryIcon, &tx.CategoryColor,
+			&tx.ID, &tx.BookID, &tx.Type, &tx.Amount, &tx.Date, &tx.TxTime, &tx.WalletID, &toW, &catID,
+			&tx.Title, &tx.SubCategory, &tx.Note, &tx.OrderNo,
+			&incBudgetInt, &reimburseInt, &tx.CreatedBy, &tx.CreatedAt, &tx.UpdatedAt,
+			&tx.CategoryName, &tx.CategoryIcon, &tx.CategoryColor, &tx.CategoryBgColor,
 			&tx.WalletName, &tx.ToWalletName,
 		); err != nil {
+			rows.Close()
 			return nil, 0, err
 		}
 		if toW.Valid {
@@ -235,42 +267,29 @@ func (r *TransactionRepo) ListTransactions(ctx context.Context, bookID string, w
 		if catID.Valid {
 			tx.CategoryID = &catID.String
 		}
-
-		// Fetch tags
-		tagRows, tagErr := r.db.QueryContext(ctx, `
-			SELECT tg.id, tg.book_id, tg.name, tg.color, tg.created_at
-			FROM tags tg
-			JOIN transaction_tags tt ON tg.id = tt.tag_id
-			WHERE tt.transaction_id = ?
-		`, tx.ID)
-		if tagErr == nil {
-			for tagRows.Next() {
-				var tag model.Tag
-				if err := tagRows.Scan(&tag.ID, &tag.BookID, &tag.Name, &tag.Color, &tag.CreatedAt); err == nil {
-					tx.Tags = append(tx.Tags, tag)
-				}
-			}
-			tagRows.Close()
-		}
+		tx.IncludeBudget = incBudgetInt == 1
+		tx.Reimburse = reimburseInt == 1
 
 		transactions = append(transactions, tx)
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, 0, err
+	}
+	rows.Close()
 
-	return transactions, total, rows.Err()
+	for i := range transactions {
+		transactions[i].Tags = r.fetchTxTags(ctx, transactions[i].ID)
+	}
+
+	return transactions, total, nil
 }
 
-func (r *TransactionRepo) DeleteTransaction(ctx context.Context, txID string) error {
-	dbTx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer dbTx.Rollback()
-
-	// Get transaction details for rollback
+func (r *TransactionRepo) deleteTxWithin(ctx context.Context, dbTx *sql.Tx, txID string) error {
 	var oldTx model.Transaction
 	var toW, catID sql.NullString
 	query := `SELECT id, book_id, type, amount, date, wallet_id, to_wallet_id, category_id FROM transactions WHERE id = ?`
-	err = dbTx.QueryRowContext(ctx, query, txID).Scan(
+	err := dbTx.QueryRowContext(ctx, query, txID).Scan(
 		&oldTx.ID, &oldTx.BookID, &oldTx.Type, &oldTx.Amount, &oldTx.Date, &oldTx.WalletID, &toW, &catID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -283,7 +302,6 @@ func (r *TransactionRepo) DeleteTransaction(ctx context.Context, txID string) er
 		oldTx.ToWalletID = &toW.String
 	}
 
-	// Balance Rollback
 	switch oldTx.Type {
 	case "expense":
 		_, err = dbTx.ExecContext(ctx, `UPDATE wallets SET balance = balance + ?, updated_at = datetime('now') WHERE id = ?`, oldTx.Amount, oldTx.WalletID)
@@ -299,13 +317,67 @@ func (r *TransactionRepo) DeleteTransaction(ctx context.Context, txID string) er
 		return err
 	}
 
-	// Delete from transactions (triggers automatic rollback in daily_summaries via trg_tx_delete_summary)
 	_, err = dbTx.ExecContext(ctx, `DELETE FROM transactions WHERE id = ?`, txID)
+	return err
+}
+
+func (r *TransactionRepo) DeleteTransaction(ctx context.Context, txID string) error {
+	dbTx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
+	defer dbTx.Rollback()
 
+	if err := r.deleteTxWithin(ctx, dbTx, txID); err != nil {
+		return err
+	}
 	return dbTx.Commit()
+}
+
+func (r *TransactionRepo) BatchDeleteTransactions(ctx context.Context, ids []string) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	dbTx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer dbTx.Rollback()
+
+	deleted := 0
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		err := r.deleteTxWithin(ctx, dbTx, id)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		deleted++
+	}
+
+	if err := dbTx.Commit(); err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
+func toBoolValue(v interface{}) (bool, bool) {
+	switch b := v.(type) {
+	case bool:
+		return b, true
+	case float64:
+		return b == 1, true
+	case int:
+		return b == 1, true
+	case int64:
+		return b == 1, true
+	}
+	return false, false
 }
 
 func (r *TransactionRepo) UpdateTransaction(ctx context.Context, txID string, updates map[string]interface{}) (*model.Transaction, error) {
@@ -315,13 +387,18 @@ func (r *TransactionRepo) UpdateTransaction(ctx context.Context, txID string, up
 	}
 	defer dbTx.Rollback()
 
-	// Load existing transaction
 	var oldTx model.Transaction
 	var toW, catID sql.NullString
-	query := `SELECT id, book_id, type, amount, date, wallet_id, to_wallet_id, category_id, note, order_no, created_by, created_at, updated_at FROM transactions WHERE id = ?`
+	var incBudgetInt, reimburseInt int
+	query := `
+	SELECT id, book_id, type, amount, date, COALESCE(tx_time, ''), wallet_id, to_wallet_id, category_id,
+	       COALESCE(title, ''), COALESCE(sub_category, ''), COALESCE(note, ''), COALESCE(order_no, ''),
+	       COALESCE(include_budget, 1), COALESCE(reimburse, 0), created_by, created_at, updated_at
+	FROM transactions WHERE id = ?`
 	err = dbTx.QueryRowContext(ctx, query, txID).Scan(
-		&oldTx.ID, &oldTx.BookID, &oldTx.Type, &oldTx.Amount, &oldTx.Date, &oldTx.WalletID, &toW, &catID,
-		&oldTx.Note, &oldTx.OrderNo, &oldTx.CreatedBy, &oldTx.CreatedAt, &oldTx.UpdatedAt,
+		&oldTx.ID, &oldTx.BookID, &oldTx.Type, &oldTx.Amount, &oldTx.Date, &oldTx.TxTime, &oldTx.WalletID, &toW, &catID,
+		&oldTx.Title, &oldTx.SubCategory, &oldTx.Note, &oldTx.OrderNo,
+		&incBudgetInt, &reimburseInt, &oldTx.CreatedBy, &oldTx.CreatedAt, &oldTx.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -335,9 +412,15 @@ func (r *TransactionRepo) UpdateTransaction(ctx context.Context, txID string, up
 	if catID.Valid {
 		oldTx.CategoryID = &catID.String
 	}
+	oldTx.IncludeBudget = incBudgetInt == 1
+	oldTx.Reimburse = reimburseInt == 1
 
-	// Calculate new values
 	newTx := oldTx
+	if v, ok := updates["type"]; ok {
+		if s, ok := v.(string); ok && (s == "expense" || s == "income" || s == "transfer") {
+			newTx.Type = s
+		}
+	}
 	if v, ok := updates["amount"]; ok {
 		switch val := v.(type) {
 		case float64:
@@ -353,6 +436,21 @@ func (r *TransactionRepo) UpdateTransaction(ctx context.Context, txID string, up
 			newTx.Date = s
 		}
 	}
+	if v, ok := updates["tx_time"]; ok {
+		if s, ok := v.(string); ok {
+			newTx.TxTime = s
+		}
+	}
+	if v, ok := updates["title"]; ok {
+		if s, ok := v.(string); ok {
+			newTx.Title = s
+		}
+	}
+	if v, ok := updates["sub_category"]; ok {
+		if s, ok := v.(string); ok {
+			newTx.SubCategory = s
+		}
+	}
 	if v, ok := updates["note"]; ok {
 		if s, ok := v.(string); ok {
 			newTx.Note = s
@@ -363,9 +461,36 @@ func (r *TransactionRepo) UpdateTransaction(ctx context.Context, txID string, up
 			newTx.WalletID = s
 		}
 	}
+	if v, ok := updates["to_wallet_id"]; ok {
+		if v == nil {
+			newTx.ToWalletID = nil
+		} else if s, ok := v.(string); ok {
+			if s == "" {
+				newTx.ToWalletID = nil
+			} else {
+				newTx.ToWalletID = &s
+			}
+		}
+	}
 	if v, ok := updates["category_id"]; ok {
-		if s, ok := v.(string); ok {
-			newTx.CategoryID = &s
+		if v == nil {
+			newTx.CategoryID = nil
+		} else if s, ok := v.(string); ok {
+			if s == "" {
+				newTx.CategoryID = nil
+			} else {
+				newTx.CategoryID = &s
+			}
+		}
+	}
+	if v, ok := updates["include_budget"]; ok {
+		if b, valid := toBoolValue(v); valid {
+			newTx.IncludeBudget = b
+		}
+	}
+	if v, ok := updates["reimburse"]; ok {
+		if b, valid := toBoolValue(v); valid {
+			newTx.Reimburse = b
 		}
 	}
 
@@ -401,24 +526,22 @@ func (r *TransactionRepo) UpdateTransaction(ctx context.Context, txID string, up
 		return nil, err
 	}
 
-	// Update daily_summaries if expense/income and date/amount/category changed
+	// Update daily_summaries
 	if oldTx.Type == "expense" || oldTx.Type == "income" {
 		oldCat := "uncategorized"
 		if oldTx.CategoryID != nil && *oldTx.CategoryID != "" {
 			oldCat = *oldTx.CategoryID
 		}
-		newCat := "uncategorized"
-		if newTx.CategoryID != nil && *newTx.CategoryID != "" {
-			newCat = *newTx.CategoryID
-		}
-
-		// Decrement old summary
 		_, _ = dbTx.ExecContext(ctx, `
 			UPDATE daily_summaries SET total_amount = total_amount - ?, count = count - 1
 			WHERE date = ? AND book_id = ? AND type = ? AND category_id = ?
 		`, oldTx.Amount, oldTx.Date, oldTx.BookID, oldTx.Type, oldCat)
-
-		// Increment new summary
+	}
+	if newTx.Type == "expense" || newTx.Type == "income" {
+		newCat := "uncategorized"
+		if newTx.CategoryID != nil && *newTx.CategoryID != "" {
+			newCat = *newTx.CategoryID
+		}
 		_, _ = dbTx.ExecContext(ctx, `
 			INSERT INTO daily_summaries (date, book_id, type, category_id, total_amount, count)
 			VALUES (?, ?, ?, ?, ?, 1)
@@ -428,14 +551,24 @@ func (r *TransactionRepo) UpdateTransaction(ctx context.Context, txID string, up
 		`, newTx.Date, newTx.BookID, newTx.Type, newCat, newTx.Amount, newTx.Amount)
 	}
 
-	// Update transactions table
+	newIncInt := 0
+	if newTx.IncludeBudget {
+		newIncInt = 1
+	}
+	newReimbInt := 0
+	if newTx.Reimburse {
+		newReimbInt = 1
+	}
+
 	updQuery := `
 	UPDATE transactions SET
-		amount = ?, date = ?, wallet_id = ?, to_wallet_id = ?, category_id = ?, note = ?, updated_at = datetime('now')
+		type = ?, amount = ?, date = ?, tx_time = ?, wallet_id = ?, to_wallet_id = ?, category_id = ?,
+		title = ?, sub_category = ?, note = ?, include_budget = ?, reimburse = ?, updated_at = datetime('now')
 	WHERE id = ?
 	`
 	_, err = dbTx.ExecContext(ctx, updQuery,
-		newTx.Amount, newTx.Date, newTx.WalletID, newTx.ToWalletID, newTx.CategoryID, newTx.Note, txID,
+		newTx.Type, newTx.Amount, newTx.Date, newTx.TxTime, newTx.WalletID, newTx.ToWalletID, newTx.CategoryID,
+		newTx.Title, newTx.SubCategory, newTx.Note, newIncInt, newReimbInt, txID,
 	)
 	if err != nil {
 		return nil, err
@@ -470,7 +603,6 @@ func (r *TransactionRepo) GetMonthlyReport(ctx context.Context, bookID string, y
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	report := &model.MonthlyReport{
 		Year:       year,
@@ -483,6 +615,7 @@ func (r *TransactionRepo) GetMonthlyReport(ctx context.Context, bookID string, y
 		var totalAmount int64
 		var count int
 		if err := rows.Scan(&t, &catID, &totalAmount, &count); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		if t == "expense" {
@@ -497,41 +630,43 @@ func (r *TransactionRepo) GetMonthlyReport(ctx context.Context, bookID string, y
 			report.TotalIncome += totalAmount
 		}
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
 
 	report.NetSavings = report.TotalIncome - report.TotalExpense
 
-	// Enrich category names, icons, colors & percentages
 	for i := range report.Categories {
 		item := &report.Categories[i]
 		if report.TotalExpense > 0 {
-			item.Percentage = float64(int64((float64(item.TotalAmount)/float64(report.TotalExpense)*100.0)*100)) / 100.0
+			item.Percentage = float64((item.TotalAmount*10000)/report.TotalExpense) / 100.0
 		}
-		var name, icon, color string
+		var name, icon, color, bgColor string
 		if item.CategoryID != "uncategorized" && item.CategoryID != "" {
-			if err := r.db.QueryRowContext(ctx, `SELECT name, icon, color FROM categories WHERE id = ?`, item.CategoryID).Scan(&name, &icon, &color); err == nil {
+			if err := r.db.QueryRowContext(ctx, `SELECT name, icon, color, COALESCE(bg_color, '#FFF6E8') FROM categories WHERE id = ?`, item.CategoryID).Scan(&name, &icon, &color, &bgColor); err == nil {
 				item.CategoryName = name
 				item.CategoryIcon = icon
 				item.CategoryColor = color
+				item.BgColor = bgColor
 			} else {
 				item.CategoryName = "未分类"
 				item.CategoryIcon = "tag"
-				item.CategoryColor = "#0E8C7F"
+				item.CategoryColor = "#DE8A1E"
+				item.BgColor = "#FFF6E8"
 			}
 		} else {
 			item.CategoryName = "未分类"
 			item.CategoryIcon = "tag"
-			item.CategoryColor = "#0E8C7F"
+			item.CategoryColor = "#DE8A1E"
+			item.BgColor = "#FFF6E8"
 		}
 	}
 
-	// Sort categories by total_amount descending
-	for i := 0; i < len(report.Categories); i++ {
-		for j := i + 1; j < len(report.Categories); j++ {
-			if report.Categories[i].TotalAmount < report.Categories[j].TotalAmount {
-				report.Categories[i], report.Categories[j] = report.Categories[j], report.Categories[i]
-			}
-		}
-	}
+	sort.Slice(report.Categories, func(i, j int) bool {
+		return report.Categories[i].TotalAmount > report.Categories[j].TotalAmount
+	})
 
 	return report, nil
 }
@@ -586,15 +721,7 @@ func (r *TransactionRepo) GetTrendReport(ctx context.Context, bookID string, mon
 		}
 	}
 
-	// Sort ascending by month
-	for i := 0; i < len(ymList); i++ {
-		for j := i + 1; j < len(ymList); j++ {
-			if ymList[i] > ymList[j] {
-				ymList[i], ymList[j] = ymList[j], ymList[i]
-			}
-		}
-	}
-
+	sort.Strings(ymList)
 	results := make([]model.TrendMonthItem, 0, len(ymList))
 	for _, ym := range ymList {
 		results = append(results, *trendMap[ym])
@@ -653,4 +780,280 @@ func (r *TransactionRepo) GetDailyReport(ctx context.Context, bookID string, yea
 		results = append(results, *dayMap[d])
 	}
 	return results, nil
+}
+
+func (r *TransactionRepo) GetStatsReport(ctx context.Context, bookID, period, txType string, year, month int) (*model.StatsReport, error) {
+	now := time.Now()
+	if year <= 0 {
+		year = now.Year()
+	}
+	if month < 1 || month > 12 {
+		month = int(now.Month())
+	}
+	if period != "week" && period != "month" && period != "year" {
+		period = "month"
+	}
+	if txType != "expense" && txType != "income" {
+		txType = "expense"
+	}
+
+	var startDate, endDate string
+	loc := now.Location()
+	switch period {
+	case "week":
+		ref := now
+		if year != now.Year() || month != int(now.Month()) {
+			ref = time.Date(year, time.Month(month), 15, 0, 0, 0, 0, loc)
+		}
+		weekday := int(ref.Weekday())
+		if weekday == 0 {
+			weekday = 7
+		}
+		startT := ref.AddDate(0, 0, -(weekday - 1))
+		endT := startT.AddDate(0, 0, 6)
+		startDate = startT.Format("2006-01-02")
+		endDate = endT.Format("2006-01-02")
+	case "year":
+		startDate = fmt.Sprintf("%04d-01-01", year)
+		endDate = fmt.Sprintf("%04d-12-31", year)
+	default:
+		firstDay := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, loc)
+		lastDay := firstDay.AddDate(0, 1, -1)
+		startDate = firstDay.Format("2006-01-02")
+		endDate = lastDay.Format("2006-01-02")
+	}
+
+	var budget int64 = 450000
+	if bookID != "" {
+		_ = r.db.QueryRowContext(ctx, `SELECT COALESCE(budget, 450000) FROM books WHERE id = ?`, bookID).Scan(&budget)
+	}
+
+	where := []string{"t.date >= ?", "t.date <= ?"}
+	args := []interface{}{startDate, endDate}
+	if bookID != "" {
+		where = append(where, "t.book_id = ?")
+		args = append(args, bookID)
+	}
+	whereSQL := strings.Join(where, " AND ")
+
+	var totalExpense, totalIncome, budgetUsed int64
+	sumQuery := fmt.Sprintf(`
+		SELECT t.type, COALESCE(SUM(t.amount), 0), COALESCE(SUM(CASE WHEN COALESCE(t.include_budget, 1) = 1 THEN t.amount ELSE 0 END), 0)
+		FROM transactions t
+		WHERE %s AND t.type IN ('expense', 'income')
+		GROUP BY t.type
+	`, whereSQL)
+	sumRows, err := r.db.QueryContext(ctx, sumQuery, args...)
+	if err != nil {
+		return nil, err
+	}
+	for sumRows.Next() {
+		var t string
+		var amt, bAmt int64
+		if err := sumRows.Scan(&t, &amt, &bAmt); err == nil {
+			if t == "expense" {
+				totalExpense = amt
+				budgetUsed = bAmt
+			} else if t == "income" {
+				totalIncome = amt
+			}
+		}
+	}
+	sumRows.Close()
+
+	netSavings := totalIncome - totalExpense
+	savingsRate := 0
+	if totalIncome > 0 && netSavings > 0 {
+		savingsRate = int((netSavings * 100) / totalIncome)
+	}
+
+	// Aggregate categories rolling up secondary subcategories to their parent top-level category
+	catArgs := append(append([]interface{}{}, args...), txType)
+	catQuery := fmt.Sprintf(`
+		SELECT COALESCE(p.id, c.id, 'uncategorized') as top_id,
+		       COALESCE(p.name, c.name, '未分类') as top_name,
+		       COALESCE(p.icon, c.icon, 'tag') as top_icon,
+		       COALESCE(p.color, c.color, '#64748B') as top_color,
+		       COALESCE(p.bg_color, c.bg_color, '#F1F5F9') as top_bg,
+		       COALESCE(SUM(t.amount), 0) as total_amt,
+		       COUNT(*) as cnt
+		FROM transactions t
+		LEFT JOIN categories c ON t.category_id = c.id
+		LEFT JOIN categories p ON c.parent_id = p.id
+		WHERE %s AND t.type = ?
+		GROUP BY top_id
+		ORDER BY total_amt DESC
+	`, whereSQL)
+
+	catRows, err := r.db.QueryContext(ctx, catQuery, catArgs...)
+	if err != nil {
+		return nil, err
+	}
+	categories := make([]model.StatsCategoryItem, 0)
+	var typeTotal int64
+	if txType == "expense" {
+		typeTotal = totalExpense
+	} else {
+		typeTotal = totalIncome
+	}
+	for catRows.Next() {
+		var item model.StatsCategoryItem
+		if err := catRows.Scan(&item.CategoryID, &item.CategoryName, &item.CategoryIcon, &item.CategoryColor, &item.BgColor, &item.Amount, &item.Count); err != nil {
+			catRows.Close()
+			return nil, err
+		}
+		if typeTotal > 0 {
+			item.Percentage = int((item.Amount * 100) / typeTotal)
+		}
+		categories = append(categories, item)
+	}
+	catRows.Close()
+
+	// Build daily or monthly series
+	series := make([]model.StatsSeriesItem, 0)
+	if period == "year" {
+		seriesMap := make(map[string]*model.StatsSeriesItem)
+		for m := 1; m <= 12; m++ {
+			ym := fmt.Sprintf("%04d-%02d", year, m)
+			seriesMap[ym] = &model.StatsSeriesItem{
+				Date:  ym,
+				Label: fmt.Sprintf("%d月", m),
+			}
+		}
+		sQuery := fmt.Sprintf(`
+			SELECT substr(t.date, 1, 7) as ym, t.type, COALESCE(SUM(t.amount), 0)
+			FROM transactions t
+			WHERE %s AND t.type IN ('expense', 'income')
+			GROUP BY ym, t.type
+		`, whereSQL)
+		sRows, err := r.db.QueryContext(ctx, sQuery, args...)
+		if err == nil {
+			for sRows.Next() {
+				var ym, t string
+				var amt int64
+				if err := sRows.Scan(&ym, &t, &amt); err == nil {
+					if slot, ok := seriesMap[ym]; ok {
+						if t == "expense" {
+							slot.Expense = amt
+						} else if t == "income" {
+							slot.Income = amt
+						}
+					}
+				}
+			}
+			sRows.Close()
+		}
+		for m := 1; m <= 12; m++ {
+			ym := fmt.Sprintf("%04d-%02d", year, m)
+			series = append(series, *seriesMap[ym])
+		}
+	} else {
+		seriesMap := make(map[string]*model.StatsSeriesItem)
+		startT, _ := time.Parse("2006-01-02", startDate)
+		endT, _ := time.Parse("2006-01-02", endDate)
+		var orderedKeys []string
+		for d := startT; !d.After(endT); d = d.AddDate(0, 0, 1) {
+			ds := d.Format("2006-01-02")
+			orderedKeys = append(orderedKeys, ds)
+			lbl := d.Format("02")
+			if period == "week" {
+				lbl = d.Format("01/02")
+			}
+			seriesMap[ds] = &model.StatsSeriesItem{
+				Date:  ds,
+				Label: lbl,
+			}
+		}
+		sQuery := fmt.Sprintf(`
+			SELECT t.date, t.type, COALESCE(SUM(t.amount), 0)
+			FROM transactions t
+			WHERE %s AND t.type IN ('expense', 'income')
+			GROUP BY t.date, t.type
+		`, whereSQL)
+		sRows, err := r.db.QueryContext(ctx, sQuery, args...)
+		if err == nil {
+			for sRows.Next() {
+				var ds, t string
+				var amt int64
+				if err := sRows.Scan(&ds, &t, &amt); err == nil {
+					if slot, ok := seriesMap[ds]; ok {
+						if t == "expense" {
+							slot.Expense = amt
+						} else if t == "income" {
+							slot.Income = amt
+						}
+					}
+				}
+			}
+			sRows.Close()
+		}
+		for _, k := range orderedKeys {
+			series = append(series, *seriesMap[k])
+		}
+	}
+
+	// Top 10 transactions of the selected type
+	topArgs := append(append([]interface{}{}, args...), txType)
+	topQuery := fmt.Sprintf(`
+		SELECT t.id, t.book_id, t.type, t.amount, t.date, COALESCE(t.tx_time, ''), t.wallet_id, t.to_wallet_id, t.category_id,
+		       COALESCE(t.title, ''), COALESCE(t.sub_category, ''), COALESCE(t.note, ''), COALESCE(t.order_no, ''),
+		       COALESCE(t.include_budget, 1), COALESCE(t.reimburse, 0), t.created_by, t.created_at, t.updated_at,
+		       COALESCE(c.name, ''), COALESCE(c.icon, ''), COALESCE(c.color, ''), COALESCE(c.bg_color, ''),
+		       COALESCE(w.name, ''), COALESCE(tw.name, '')
+		FROM transactions t
+		LEFT JOIN categories c ON t.category_id = c.id
+		LEFT JOIN wallets w ON t.wallet_id = w.id
+		LEFT JOIN wallets tw ON t.to_wallet_id = tw.id
+		WHERE %s AND t.type = ?
+		ORDER BY t.amount DESC, t.date DESC
+		LIMIT 10
+	`, whereSQL)
+
+	topRows, err := r.db.QueryContext(ctx, topQuery, topArgs...)
+	if err != nil {
+		return nil, err
+	}
+	topTxs := make([]model.Transaction, 0)
+	for topRows.Next() {
+		var tx model.Transaction
+		var toW, catID sql.NullString
+		var incBudgetInt, reimburseInt int
+		tx.Tags = []model.Tag{}
+		if err := topRows.Scan(
+			&tx.ID, &tx.BookID, &tx.Type, &tx.Amount, &tx.Date, &tx.TxTime, &tx.WalletID, &toW, &catID,
+			&tx.Title, &tx.SubCategory, &tx.Note, &tx.OrderNo,
+			&incBudgetInt, &reimburseInt, &tx.CreatedBy, &tx.CreatedAt, &tx.UpdatedAt,
+			&tx.CategoryName, &tx.CategoryIcon, &tx.CategoryColor, &tx.CategoryBgColor,
+			&tx.WalletName, &tx.ToWalletName,
+		); err != nil {
+			topRows.Close()
+			return nil, err
+		}
+		if toW.Valid {
+			tx.ToWalletID = &toW.String
+		}
+		if catID.Valid {
+			tx.CategoryID = &catID.String
+		}
+		tx.IncludeBudget = incBudgetInt == 1
+		tx.Reimburse = reimburseInt == 1
+		topTxs = append(topTxs, tx)
+	}
+	topRows.Close()
+
+	return &model.StatsReport{
+		Period:          period,
+		Type:            txType,
+		StartDate:       startDate,
+		EndDate:         endDate,
+		TotalExpense:    totalExpense,
+		TotalIncome:     totalIncome,
+		NetSavings:      netSavings,
+		SavingsRate:     savingsRate,
+		Budget:          budget,
+		BudgetUsed:      budgetUsed,
+		Categories:      categories,
+		DailySeries:     series,
+		TopTransactions: topTxs,
+	}, nil
 }

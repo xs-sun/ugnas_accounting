@@ -17,9 +17,35 @@ func NewWalletRepo(db *DB) *WalletRepo {
 	return &WalletRepo{db: db}
 }
 
+func DefaultWalletGroupAndColor(wType string) (string, string) {
+	switch wType {
+	case "wechat":
+		return "电子钱包", "#3E8E63"
+	case "alipay":
+		return "电子钱包", "#2F78A8"
+	case "debit":
+		return "储蓄卡", "#DE8A1E"
+	case "credit":
+		return "信用负债", "#D6553E"
+	case "cash":
+		return "现金", "#64748B"
+	case "investment", "invest":
+		return "投资理财", "#7E57A6"
+	default:
+		return "电子钱包", "#DE8A1E"
+	}
+}
+
 func (r *WalletRepo) CreateWallet(ctx context.Context, w *model.Wallet) error {
 	if w.ID == "" {
 		w.ID = uuid.NewString()
+	}
+	defGroup, defColor := DefaultWalletGroupAndColor(w.Type)
+	if w.GroupName == "" {
+		w.GroupName = defGroup
+	}
+	if w.Color == "" {
+		w.Color = defColor
 	}
 
 	excludeInt := 0
@@ -29,25 +55,27 @@ func (r *WalletRepo) CreateWallet(ctx context.Context, w *model.Wallet) error {
 
 	query := `
 	INSERT INTO wallets (
-		id, book_id, type, name, balance, credit_limit, billing_day, repayment_day, card_last_four, exclude_net_asset
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		id, book_id, type, name, group_name, color, balance, credit_limit, billing_day, repayment_day, card_last_four, exclude_net_asset
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	_, err := r.db.ExecContext(ctx, query,
-		w.ID, w.BookID, w.Type, w.Name, w.Balance, w.CreditLimit, w.BillingDay, w.RepaymentDay, w.CardLastFour, excludeInt,
+		w.ID, w.BookID, w.Type, w.Name, w.GroupName, w.Color, w.Balance, w.CreditLimit, w.BillingDay, w.RepaymentDay, w.CardLastFour, excludeInt,
 	)
 	return err
 }
 
 func (r *WalletRepo) GetWallet(ctx context.Context, walletID string) (*model.Wallet, error) {
 	query := `
-	SELECT id, book_id, type, name, balance, credit_limit, billing_day, repayment_day, card_last_four,
+	SELECT id, book_id, type, name, COALESCE(group_name, '电子钱包'), COALESCE(color, '#DE8A1E'),
+	       balance, credit_limit, billing_day, repayment_day, card_last_four,
 	       exclude_net_asset, is_archived, created_at, updated_at
 	FROM wallets WHERE id = ?
 	`
 	var w model.Wallet
 	var excludeInt, archiveInt int
 	err := r.db.QueryRowContext(ctx, query, walletID).Scan(
-		&w.ID, &w.BookID, &w.Type, &w.Name, &w.Balance, &w.CreditLimit, &w.BillingDay, &w.RepaymentDay,
+		&w.ID, &w.BookID, &w.Type, &w.Name, &w.GroupName, &w.Color,
+		&w.Balance, &w.CreditLimit, &w.BillingDay, &w.RepaymentDay,
 		&w.CardLastFour, &excludeInt, &archiveInt, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -63,7 +91,8 @@ func (r *WalletRepo) GetWallet(ctx context.Context, walletID string) (*model.Wal
 
 func (r *WalletRepo) ListWallets(ctx context.Context, bookID string, includeArchived bool) ([]model.Wallet, error) {
 	query := `
-	SELECT id, book_id, type, name, balance, credit_limit, billing_day, repayment_day, card_last_four,
+	SELECT id, book_id, type, name, COALESCE(group_name, '电子钱包'), COALESCE(color, '#DE8A1E'),
+	       balance, credit_limit, billing_day, repayment_day, card_last_four,
 	       exclude_net_asset, is_archived, created_at, updated_at
 	FROM wallets WHERE 1=1
 	`
@@ -88,7 +117,8 @@ func (r *WalletRepo) ListWallets(ctx context.Context, bookID string, includeArch
 		var w model.Wallet
 		var excludeInt, archiveInt int
 		if err := rows.Scan(
-			&w.ID, &w.BookID, &w.Type, &w.Name, &w.Balance, &w.CreditLimit, &w.BillingDay, &w.RepaymentDay,
+			&w.ID, &w.BookID, &w.Type, &w.Name, &w.GroupName, &w.Color,
+			&w.Balance, &w.CreditLimit, &w.BillingDay, &w.RepaymentDay,
 			&w.CardLastFour, &excludeInt, &archiveInt, &w.CreatedAt, &w.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -103,8 +133,9 @@ func (r *WalletRepo) ListWallets(ctx context.Context, bookID string, includeArch
 func (r *WalletRepo) UpdateWallet(ctx context.Context, w *model.Wallet) error {
 	query := `
 	UPDATE wallets SET
-		name = ?, type = ?, credit_limit = ?, billing_day = ?, repayment_day = ?,
-		card_last_four = ?, exclude_net_asset = ?, is_archived = ?, updated_at = datetime('now')
+		name = ?, type = ?, group_name = ?, color = ?, balance = ?, credit_limit = ?,
+		billing_day = ?, repayment_day = ?, card_last_four = ?, exclude_net_asset = ?,
+		is_archived = ?, updated_at = datetime('now')
 	WHERE id = ?
 	`
 	excludeInt := 0
@@ -117,8 +148,8 @@ func (r *WalletRepo) UpdateWallet(ctx context.Context, w *model.Wallet) error {
 	}
 
 	res, err := r.db.ExecContext(ctx, query,
-		w.Name, w.Type, w.CreditLimit, w.BillingDay, w.RepaymentDay, w.CardLastFour,
-		excludeInt, archiveInt, w.ID,
+		w.Name, w.Type, w.GroupName, w.Color, w.Balance, w.CreditLimit,
+		w.BillingDay, w.RepaymentDay, w.CardLastFour, excludeInt, archiveInt, w.ID,
 	)
 	if err != nil {
 		return err

@@ -4,31 +4,317 @@
 
 @layer base {
   :root {
-    --color-canvas: #F6F7F8;
-    --color-surface: #FFFFFF;
-    --color-brand: #0E8C7F;
-    --color-brand-dark: #0B6E64;
-    --color-brand-tint: #E4F3F1;
-    --color-expense: #E5654E;
-    --color-text-ink: #171A20;
-    --color-text-muted: #5D6470;
-    --color-text-subtle: #9AA0AB;
-    --color-border: #EDEEF1;
+    --bg-canvas: #F5F6F8;
+    --bg-canvas-pc: #F4F5F8;
+    --surface: #FFFFFF;
+    --border-warm: #ECEEF2;
+    --border-pc: #EAECEF;
+    --ink-primary: #18181B;
+    --ink-secondary: #64748B;
+    --ink-muted: #94A3B8;
+    --brand-700: #DE8A1E;
+    --brand-600: #EC9B2E;
+    --brand-dark: #C67612;
+    --brand-100: #FFF7EB;
+    --brand-tint: #FFF6E8;
+    --terracotta: #D6553E;
+    --terracotta-bg: #FDF0EE;
+    --income-green: #3E8E63;
+    --income-bg: #ECF6F0;
+    --amber: #D9822B;
+    --amber-bg: #FEF6E7;
+  }
+
+  * {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
   }
 
   body {
-    background-color: var(--color-canvas);
-    color: var(--color-text-ink);
-    font-family: "PingFang SC", -apple-system, BlinkMacSystemFont, "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background-color: var(--bg-canvas);
+    color: var(--ink-primary);
+    font-family: 'Inter', 'PingFang SC', -apple-system, BlinkMacSystemFont, 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
     margin: 0;
     padding: 0;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+}
 
-  /* 等宽排印与印刷微紧排 */
-  .tabular-nums {
-    font-variant-numeric: tabular-nums;
-    letter-spacing: -0.02em;
+/* 等宽数字排印 */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 移动端软卡片 */
+.app-card {
+  background: var(--surface);
+  border: 1px solid var(--border-warm);
+  border-radius: 22px;
+  box-shadow: 0 2px 10px rgba(28, 37, 32, 0.025);
+}
+
+/* PC 端卡片 */
+.pc-card {
+  background: #FFFFFF;
+  border: 1px solid #EAECEF;
+  border-radius: 20px;
+  box-shadow: 0 2px 10px -4px rgba(15, 23, 42, 0.04);
+}
+.pc-card-hover:hover {
+  border-color: #E2D5C0;
+  box-shadow: 0 8px 24px -10px rgba(15, 23, 42, 0.08);
+}
+
+/* 琥珀金渐变主按钮 */
+.btn-amber {
+  background: linear-gradient(135deg, #ECA034 0%, #DA8316 100%);
+  box-shadow: 0 6px 16px -6px rgba(218, 131, 22, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+.btn-amber:hover {
+  filter: brightness(1.03);
+}
+
+/* 液态玻璃底栏 & 悬浮按钮 & 顶部胶囊 */
+.glass-dock {
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(26px) saturate(180%);
+  -webkit-backdrop-filter: blur(26px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.92);
+  box-shadow:
+    0 14px 34px -10px rgba(15, 23, 42, 0.14),
+    0 2px 8px -2px rgba(15, 23, 42, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -1px 0 rgba(15, 23, 42, 0.03);
+}
+
+.glass-fab {
+  background: linear-gradient(145deg, #F0A336 0%, #D98014 100%);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  box-shadow:
+    0 12px 24px -6px rgba(217, 128, 20, 0.42),
+    inset 0 1.5px 1px rgba(255, 255, 255, 0.48);
+}
+.glass-fab:hover {
+  filter: brightness(1.04);
+}
+
+.glass-top-pill {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  border: 1px solid rgba(226, 232, 240, 0.88);
+  box-shadow:
+    0 6px 20px -6px rgba(15, 23, 42, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.top-fade-mask {
+  background: linear-gradient(
+    to bottom,
+    rgba(245, 246, 248, 0.94) 0%,
+    rgba(245, 246, 248, 0.72) 68%,
+    rgba(245, 246, 248, 0) 100%
+  );
+}
+
+.nav-tab-active {
+  background: rgba(24, 24, 27, 0.06);
+  color: #18181B !important;
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.8);
+}
+.nav-tab-active svg {
+  color: #DE8A1E;
+  stroke-width: 2.3;
+}
+
+/* 滚动条样式 */
+.phone-scroll::-webkit-scrollbar {
+  width: 0px;
+  height: 0px;
+}
+.phone-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.thin-scroll::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: #D8DDE6;
+  border-radius: 99px;
+}
+.thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 自定义下拉浮层动画 */
+.cselect-menu {
+  transform-origin: top center;
+  animation: dropIn 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+  box-shadow: 0 16px 36px -10px rgba(15, 23, 42, 0.14), 0 0 0 1px rgba(226, 232, 240, 0.9);
+}
+@keyframes dropIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 语音波形动画 */
+@keyframes voiceWave {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+.voice-bar {
+  animation: voiceWave 0.72s ease-in-out infinite;
+  transform-origin: center;
+}
+
+/* 小键盘按压反馈 */
+.key-btn:active {
+  transform: scale(0.96);
+  background-color: #EEF0F4;
+}
+
+/* 柱状图高度过渡 */
+.bar-fill {
+  transition: height 0.35s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.2s ease;
+}
+
+/* 底部弹出 Sheet 物理动效 */
+.sheet-backdrop {
+  transition: opacity 0.24s ease;
+  touch-action: none;
+  overscroll-behavior: none;
+}
+.sheet-panel {
+  transition:
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    height 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    max-height 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    border-radius 0.24s ease;
+  will-change: transform, height;
+  overscroll-behavior: contain;
+}
+.sheet-panel .phone-scroll {
+  overscroll-behavior: contain;
+}
+.sheet-panel.is-dragging {
+  transition: none !important;
+}
+.sheet-panel.sheet-compact {
+  height: 44% !important;
+  max-height: 44% !important;
+}
+.sheet-panel.sheet-fullscreen {
+  height: calc(100% - 44px) !important;
+  max-height: calc(100% - 44px) !important;
+  border-top-left-radius: 24px !important;
+  border-top-right-radius: 24px !important;
+}
+.sheet-drag-handle {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.sheet-drag-handle:active {
+  cursor: grabbing;
+}
+.sheet-grabber-bar {
+  background-color: #D4D9E1;
+  transition: width 0.18s ease, background-color 0.18s ease;
+}
+.sheet-drag-handle:hover .sheet-grabber-bar {
+  background-color: #94A3B8;
+  width: 48px;
+}
+.record-swipe-stage {
+  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+.record-swipe-stage.is-swiping {
+  transition: none !important;
+}
+.sheet-hidden {
+  pointer-events: none;
+}
+.sheet-hidden .sheet-backdrop {
+  opacity: 0;
+}
+.sheet-hidden .sheet-panel {
+  transform: translateY(104%);
+}
+
+/* 侧滑抽屉 */
+.drawer-backdrop {
+  transition: opacity 0.22s ease;
+}
+.drawer-panel-right {
+  transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.drawer-panel-left {
+  transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.drawer-hidden {
+  pointer-events: none;
+}
+.drawer-hidden .drawer-backdrop {
+  opacity: 0;
+}
+.drawer-hidden .drawer-panel-right {
+  transform: translateX(104%);
+}
+.drawer-hidden .drawer-panel-left {
+  transform: translateX(-104%);
+}
+
+/* Toast 动效 */
+.toast-pill,
+.toast-box {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.toast-hidden {
+  opacity: 0;
+  transform: translate(-50%, -10px);
+  pointer-events: none;
+}
+
+/* 移动端安全区适配 */
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* 防止 iOS Safari / 移动端 WebView 点击输入框时自动放大页面（计算字号 >= 16px） */
+@media (max-width: 1024px), (hover: none) and (pointer: coarse) {
+  html {
+    -webkit-text-size-adjust: 100%;
+    touch-action: manipulation;
+  }
+
+  html body input:not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']):not([type='hidden']):not([type='button']):not([type='submit']):not(.text-lg):not(.text-xl):not(.text-2xl):not(.text-3xl),
+  html body textarea:not(.text-lg):not(.text-xl):not(.text-2xl):not(.text-3xl),
+  html body select:not(.text-lg):not(.text-xl):not(.text-2xl):not(.text-3xl) {
+    font-size: 16px !important;
+  }
+
+  html body input::placeholder,
+  html body textarea::placeholder {
+    font-size: 13px !important;
   }
 }

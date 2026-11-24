@@ -16,9 +16,13 @@ book_id=$(echo "$HTTP_BODY" | jq -r '.data.id')
 bw=$(jq -n -c --arg bid "$book_id" '{book_id: $bid, name: "主账户", type: "debit", balance: 100000}')
 api_request "POST" "/api/v1/wallets" "$bw"
 w_id=$(echo "$HTTP_BODY" | jq -r '.data.id')
-bc=$(jq -n -c --arg bid "$book_id" '{book_id: $bid, name: "餐饮", type: "expense"}')
-api_request "POST" "/api/v1/categories" "$bc"
-cat_id=$(echo "$HTTP_BODY" | jq -r '.data.id')
+api_request "GET" "/api/v1/categories?book_id=${book_id}&type=expense"
+cat_id=$(echo "$HTTP_BODY" | jq -r '.data[]? | select(.name=="餐饮" and (.parent_id == null or .parent_id == "")) | .id' | head -n 1)
+if [[ -z "$cat_id" || "$cat_id" == "null" ]]; then
+  bc=$(jq -n -c --arg bid "$book_id" '{book_id: $bid, name: "餐饮", type: "expense"}')
+  api_request "POST" "/api/v1/categories" "$bc"
+  cat_id=$(echo "$HTTP_BODY" | jq -r '.data.id')
+fi
 
 start_test "T1-F10-01" "Insert Trigger Updates Pre-Agg"
 btx1=$(jq -n -c --arg bid "$book_id" --arg wid "$w_id" --arg cid "$cat_id" '{book_id: $bid, wallet_id: $wid, category_id: $cid, type: "expense", amount: 3500, date: "2026-09-04"}')

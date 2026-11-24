@@ -1,0 +1,1152 @@
+package handler
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"com.xsguyu.accounting/backend/internal/model"
+	"com.xsguyu.accounting/backend/internal/repository"
+	"com.xsguyu.accounting/backend/internal/service"
+)
+
+type testEnv struct {
+	db                  *repository.DB
+	dataDir             string
+	handler             http.Handler
+	bookRepo            *repository.BookRepo
+	walletRepo          *repository.WalletRepo
+	catRepo             *repository.CategoryRepo
+	txRepo              *repository.TransactionRepo
+	userRepo            *repository.UserRepo
+	budgetRepo          *repository.BudgetRepo
+	recurringRepo       *repository.RecurringRepo
+	settingsRepo        *repository.SettingsRepo
+	authSvc             *service.AuthService
+	recurringScheduler  *service.RecurringScheduler
+	autoBackupScheduler *service.AutoBackupScheduler
+}
+
+func setupTestEnv(t *testing.T) *testEnv {
+	t.Helper()
+	dataDir := t.TempDir()
+	db, err := repository.InitDB(dataDir)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	bookRepo := repository.NewBookRepo(db)
+	walletRepo := repository.NewWalletRepo(db)
+	catRepo := repository.NewCategoryRepo(db)
+	txRepo := repository.NewTransactionRepo(db)
+	snapshotRepo := repository.NewSnapshotRepo(db)
+	userRepo := repository.NewUserRepo(db)
+	budgetRepo := repository.NewBudgetRepo(db)
+	recurringRepo := repository.NewRecurringRepo(db)
+	settingsRepo := repository.NewSettingsRepo(db, dataDir)
+
+	snapshotSvc := service.NewSnapshotService(db, snapshotRepo, dataDir)
+	importSvc := service.NewImportService(db)
+	exportSvc := service.NewExportService(db)
+	authSvc := service.NewAuthService(userRepo, settingsRepo)
+	aiSvc := service.NewAiService(bookRepo, catRepo, walletRepo, txRepo, userRepo, settingsRepo)
+	recSched := service.NewRecurringScheduler(recurringRepo, txRepo)
+	bakSched := service.NewAutoBackupScheduler(snapshotSvc, settingsRepo)
+
+	authH := NewAuthHandler(userRepo, bookRepo, walletRepo, settingsRepo, authSvc)
+	userH := NewUserHandler(bookRepo, walletRepo, txRepo, userRepo, settingsRepo, dataDir)
+	bookH := NewBookHandler(bookRepo, userRepo, authSvc)
+	walletH := NewWalletHandler(walletRepo, bookRepo)
+	catH := NewCategoryHandler(catRepo)
+	txH := NewTransactionHandler(txRepo, bookRepo, walletRepo, dataDir)
+	reportH := NewReportHandler(txRepo)
+	budgetH := NewBudgetHandler(budgetRepo, bookRepo)
+	recH := NewRecurringHandler(recurringRepo)
+	aiH := NewAiHandler(aiSvc)
+	adminH := NewAdminHandler(settingsRepo, userRepo, authSvc)
+	impExpH := NewImportExportHandler(importSvc, exportSvc)
+	snapH := NewSnapshotHandler(snapshotSvc)
+
+	router := NewRouter(
+		RouterConfig{AppID: "com.xsguyu.accounting", Version: "0.2.0", StaticDir: filepath.Join(dataDir, "nonexistent_www")},
+		authH, userH, bookH, walletH, catH, txH, reportH, budgetH, recH, aiH, adminH, impExpH, snapH,
+	)
+
+	chain := CORSMiddleware(NewAuthMiddleware(userRepo, authSvc)(router))
+	return &testEnv{
+		db:                  db,
+		dataDir:             dataDir,
+		handler:             chain,
+		bookRepo:            bookRepo,
+		walletRepo:          walletRepo,
+		catRepo:             catRepo,
+		txRepo:              txRepo,
+		userRepo:            userRepo,
+		budgetRepo:          budgetRepo,
+		recurringRepo:       recurringRepo,
+		settingsRepo:        settingsRepo,
+		authSvc:             authSvc,
+		recurringScheduler:  recSched,
+		autoBackupScheduler: bakSched,
+	}
+}
+
+func doJSONReq(t *testing.T, h http.Handler, method, path string, body interface{}, headers map[string]string) (*httptest.ResponseRecorder, map[string]interface{}) {
+	t.Helper()
+	var buf io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+		buf = bytes.NewReader(b)
+	}
+	req := httptest.NewRequest(method, path, buf)
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	var resp map[string]interface{}
+	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+	return rr, resp
+}
+
+func TestSchemaMigrationIdempotency(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "accounting.db")
+
+	// Simulate legacy v0.1.7 database without new columns or tables
+	legacyDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	_, err = legacyDB.Exec(`
+		CREATE TABLE books (id TEXT PRIMARY KEY, name TEXT NOT NULL, currency TEXT NOT NULL DEFAULT 'CNY', description TEXT DEFAULT '', owner_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+		INSERT INTO books (id, name, owner_id) VALUES ('old_b1', '旧账本', 'u_old');
+		CREATE TABLE book_members (book_id TEXT NOT NULL, user_id TEXT NOT NULL, user_name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'editor', created_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (book_id, user_id));
+		CREATE TABLE wallets (id TEXT PRIMARY KEY, book_id TEXT NOT NULL, type TEXT NOT NULL, name TEXT NOT NULL, balance INTEGER NOT NULL DEFAULT 0, credit_limit INTEGER NOT NULL DEFAULT 0, billing_day INTEGER DEFAULT 1, repayment_day INTEGER DEFAULT 20, card_last_four TEXT DEFAULT '', exclude_net_asset INTEGER NOT NULL DEFAULT 0, is_archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+		CREATE TABLE categories (id TEXT PRIMARY KEY, book_id TEXT NOT NULL, type TEXT NOT NULL, name TEXT NOT NULL, icon TEXT NOT NULL DEFAULT 'tag', color TEXT NOT NULL DEFAULT '#0E8C7F', parent_id TEXT DEFAULT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+		CREATE TABLE transactions (id TEXT PRIMARY KEY, book_id TEXT NOT NULL, type TEXT NOT NULL, amount INTEGER NOT NULL, date TEXT NOT NULL, wallet_id TEXT NOT NULL, to_wallet_id TEXT DEFAULT NULL, category_id TEXT DEFAULT NULL, note TEXT DEFAULT '', order_no TEXT DEFAULT '', created_by TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+	`)
+	if err != nil {
+		t.Fatalf("seed legacy db: %v", err)
+	}
+	_ = legacyDB.Close()
+
+	// Run InitDB twice to ensure full idempotency
+	db1, err := repository.InitDB(dir)
+	if err != nil {
+		t.Fatalf("first InitDB failed: %v", err)
+	}
+	_ = db1.Close()
+
+	db2, err := repository.InitDB(dir)
+	if err != nil {
+		t.Fatalf("second InitDB failed: %v", err)
+	}
+	defer db2.Close()
+
+	// Verify backfilled invite_code on legacy book
+	var inviteCode string
+	var budget int64
+	if err := db2.QueryRow(`SELECT invite_code, budget FROM books WHERE id = 'old_b1'`).Scan(&inviteCode, &budget); err != nil {
+		t.Fatalf("query migrated book: %v", err)
+	}
+	if !strings.HasPrefix(inviteCode, "CAT7-") || budget != 450000 {
+		t.Fatalf("unexpected migrated book values: invite=%s budget=%d", inviteCode, budget)
+	}
+
+	// Verify all 6 new tables exist
+	for _, tbl := range []string{"users", "email_codes", "category_budgets", "recurring_rules", "ai_usage_logs", "system_settings"} {
+		var name string
+		if err := db2.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, tbl).Scan(&name); err != nil {
+			t.Fatalf("expected table %s to exist: %v", tbl, err)
+		}
+	}
+}
+
+func TestAuthAndUserLifecycle(t *testing.T) {
+	env := setupTestEnv(t)
+
+	// Health check returns v0.2.0
+	rr, resp := doJSONReq(t, env.handler, http.MethodGet, "/api/v1/health", nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("health status %d", rr.Code)
+	}
+	data := resp["data"].(map[string]interface{})
+	if data["version"] != "0.2.0" {
+		t.Fatalf("expected version 0.2.0, got %v", data["version"])
+	}
+
+	// Send verification code for register
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/send-code", map[string]string{
+		"email":   "xiaohe@cat7.app",
+		"purpose": "register",
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("send-code failed: %d %s", rr.Code, rr.Body.String())
+	}
+	demoCode := resp["data"].(map[string]interface{})["demo_code"].(string)
+	if len(demoCode) != 6 {
+		t.Fatalf("expected 6-digit demo_code, got %s", demoCode)
+	}
+
+	// Register first user (becomes admin)
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/register", map[string]string{
+		"name":     "林小禾",
+		"email":    "xiaohe@cat7.app",
+		"code":     demoCode,
+		"password": "password123",
+	}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("register failed: %d %s", rr.Code, rr.Body.String())
+	}
+	regData := resp["data"].(map[string]interface{})
+	token := regData["token"].(string)
+	if !strings.HasPrefix(token, "cat7_") {
+		t.Fatalf("expected cat7_ token, got %s", token)
+	}
+
+	// Login with password
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email":    "xiaohe@cat7.app",
+		"password": "password123",
+		"mode":     "password",
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("password login failed: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Login with code
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/send-code", map[string]string{
+		"email":   "xiaohe@cat7.app",
+		"purpose": "login",
+	}, nil)
+	loginCode := resp["data"].(map[string]interface{})["demo_code"].(string)
+	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email": "xiaohe@cat7.app",
+		"code":  loginCode,
+		"mode":  "code",
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code login failed: %d", rr.Code)
+	}
+
+	// Forgot password (also verify purpose="forgot" alias)
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/send-code", map[string]string{
+		"email":   "xiaohe@cat7.app",
+		"purpose": "forgot",
+	}, nil)
+	resetCode := resp["data"].(map[string]interface{})["demo_code"].(string)
+	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/forgot-password", map[string]string{
+		"email":        "xiaohe@cat7.app",
+		"code":         resetCode,
+		"new_password": "newpassword456",
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("forgot password failed: %d", rr.Code)
+	}
+	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email":    "xiaohe@cat7.app",
+		"password": "newpassword456",
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("login with new password failed: %d", rr.Code)
+	}
+
+	// Update profile with Base64 avatar upload & fetch avatar binary
+	authHeaders := map[string]string{"Authorization": "Bearer " + token}
+	tinyPNG := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a})
+	rr, resp = doJSONReq(t, env.handler, http.MethodPut, "/api/v1/user/profile", map[string]string{
+		"name":   "林小禾Pro",
+		"avatar": tinyPNG,
+	}, authHeaders)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update profile failed: %d %s", rr.Code, rr.Body.String())
+	}
+	prof := resp["data"].(map[string]interface{})
+	avatarURL := prof["avatar"].(string)
+	if !strings.HasPrefix(avatarURL, "/api/v1/avatars/") || prof["user_name"] != "林小禾Pro" {
+		t.Fatalf("unexpected profile after update: %+v", prof)
+	}
+
+	avReq := httptest.NewRequest(http.MethodGet, avatarURL, nil)
+	avRec := httptest.NewRecorder()
+	env.handler.ServeHTTP(avRec, avReq)
+	if avRec.Code != http.StatusOK || avRec.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("serve avatar failed: code=%d ct=%s", avRec.Code, avRec.Header().Get("Content-Type"))
+	}
+
+	// Path traversal check on avatars
+	badReq := httptest.NewRequest(http.MethodGet, "/api/v1/avatars/..%2Faccounting.db", nil)
+	badRec := httptest.NewRecorder()
+	env.handler.ServeHTTP(badRec, badReq)
+	if badRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for avatar path traversal, got %d", badRec.Code)
+	}
+
+	// UGOS user bind-email
+	ugosHeaders := map[string]string{
+		"Ugreen-User-ID":   "ug_1001",
+		"Ugreen-User-Name": "UG用户",
+		"Ugreen-User-Type": "users",
+	}
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/send-code", map[string]string{
+		"email":   "ug1001@cat7.app",
+		"purpose": "bind",
+	}, nil)
+	bindCode := resp["data"].(map[string]interface{})["demo_code"].(string)
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/user/bind-email", map[string]string{
+		"email": "ug1001@cat7.app",
+		"code":  bindCode,
+	}, ugosHeaders)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bind email failed: %d %s", rr.Code, rr.Body.String())
+	}
+	if resp["data"].(map[string]interface{})["email_bound"] != true {
+		t.Fatalf("expected email_bound=true")
+	}
+
+	// Registration rules: require invite code and closed registration
+	rr, _ = doJSONReq(t, env.handler, http.MethodPut, "/api/v1/admin/reg-config", map[string]interface{}{
+		"allow_register":      true,
+		"require_invite_code": true,
+		"invite_code":         "CAT7-VIP-999",
+	}, authHeaders)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update reg-config failed: %d", rr.Code)
+	}
+	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/register", map[string]string{
+		"name":        "BlockedUser",
+		"email":       "blocked@cat7.app",
+		"password":    "pass1234",
+		"invite_code": "WRONG",
+	}, nil)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for wrong invite code, got %d", rr.Code)
+	}
+
+	// Valid invite code succeeds
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/register", map[string]string{
+		"name":        "陈屿",
+		"email":       "chenyu@cat7.app",
+		"password":    "pass1234",
+		"invite_code": "CAT7-VIP-999",
+	}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201 with valid invite code, got %d %s", rr.Code, rr.Body.String())
+	}
+	user2Token := resp["data"].(map[string]interface{})["token"].(string)
+	user2ID := resp["data"].(map[string]interface{})["user"].(map[string]interface{})["user_id"].(string)
+
+	// Non-admin cannot access admin API
+	rr, _ = doJSONReq(t, env.handler, http.MethodGet, "/api/v1/admin/overview", nil, map[string]string{
+		"Authorization": "Bearer " + user2Token,
+	})
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-admin, got %d", rr.Code)
+	}
+
+	// Admin cannot disable self -> 400
+	adminID := regData["user"].(map[string]interface{})["user_id"].(string)
+	rr, _ = doJSONReq(t, env.handler, http.MethodPut, "/api/v1/admin/users/"+adminID, map[string]interface{}{
+		"is_active": false,
+	}, authHeaders)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when admin disables self, got %d", rr.Code)
+	}
+
+	// Admin disables user2 -> token rejected with 403
+	rr, _ = doJSONReq(t, env.handler, http.MethodPut, "/api/v1/admin/users/"+user2ID, map[string]interface{}{
+		"is_active": false,
+	}, authHeaders)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("disable user failed: %d", rr.Code)
+	}
+	rr, _ = doJSONReq(t, env.handler, http.MethodGet, "/api/v1/user/profile", nil, map[string]string{
+		"Authorization": "Bearer " + user2Token,
+	})
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for disabled user, got %d", rr.Code)
+	}
+}
+
+func TestBooksWalletsCategoriesTransactionsAndBudgets(t *testing.T) {
+	env := setupTestEnv(t)
+	ownerH := map[string]string{"Ugreen-User-ID": "u_owner", "Ugreen-User-Name": "小禾", "Ugreen-User-Type": "admin"}
+	guestH := map[string]string{"Ugreen-User-ID": "u_guest", "Ugreen-User-Name": "访客", "Ugreen-User-Type": "users"}
+
+	// First GET /books auto-seeds one default book
+	rr, resp := doJSONReq(t, env.handler, http.MethodGet, "/api/v1/books", nil, ownerH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list books failed: %d", rr.Code)
+	}
+	books := resp["data"].([]interface{})
+	if len(books) != 1 {
+		t.Fatalf("expected 1 auto-seeded book, got %d", len(books))
+	}
+	b0 := books[0].(map[string]interface{})
+	bookID := b0["id"].(string)
+	inviteCode := b0["invite_code"].(string)
+	if b0["name"] != "个人日常账本" || int64(b0["budget"].(float64)) != 450000 || !strings.HasPrefix(inviteCode, "CAT7-") {
+		t.Fatalf("unexpected auto-seeded book: %+v", b0)
+	}
+
+	// Verify 10 expense top cats + 36 subcats + 5 income top cats + 10 subcats = 61 categories
+	cats, err := env.catRepo.ListCategories(context.Background(), bookID, "")
+	if err != nil || len(cats) != 61 {
+		t.Fatalf("expected 61 preset categories, got %d (err=%v)", len(cats), err)
+	}
+	var foodCatID, shopCatID, coffeeSubID string
+	for _, c := range cats {
+		if c.Type == "expense" && c.ParentID == nil && c.Name == "餐饮" {
+			foodCatID = c.ID
+		}
+		if c.Type == "expense" && c.ParentID == nil && c.Name == "购物" {
+			shopCatID = c.ID
+		}
+		if c.Type == "expense" && c.ParentID != nil && c.Name == "咖啡饮品" {
+			coffeeSubID = c.ID
+		}
+	}
+	if foodCatID == "" || shopCatID == "" || coffeeSubID == "" {
+		t.Fatalf("missing expected preset categories")
+	}
+
+	// Verify 4 preset wallets with zero initial balance
+	wallets, err := env.walletRepo.ListWallets(context.Background(), bookID, false)
+	if err != nil || len(wallets) != 4 {
+		t.Fatalf("expected 4 preset wallets, got %d", len(wallets))
+	}
+	wechatWalletID := wallets[0].ID
+
+	// Test deleting the seeded book does NOT auto-seed again on next GET /books
+	rr, _ = doJSONReq(t, env.handler, http.MethodDelete, "/api/v1/books/"+bookID, nil, ownerH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("delete book failed: %d", rr.Code)
+	}
+	rr, resp = doJSONReq(t, env.handler, http.MethodGet, "/api/v1/books", nil, ownerH)
+	if len(resp["data"].([]interface{})) != 0 {
+		t.Fatalf("expected 0 books after explicit deletion, got %v", resp["data"])
+	}
+
+	// Create a new book for detailed flow tests
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/books", map[string]interface{}{
+		"name":   "家庭账本",
+		"color":  "#3E8E63",
+		"budget": 600000,
+	}, ownerH)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create book failed: %d", rr.Code)
+	}
+	bNew := resp["data"].(map[string]interface{})
+	bookID = bNew["id"].(string)
+	inviteCode = bNew["invite_code"].(string)
+
+	cats, _ = env.catRepo.ListCategories(context.Background(), bookID, "")
+	for _, c := range cats {
+		if c.Type == "expense" && c.ParentID == nil && c.Name == "餐饮" {
+			foodCatID = c.ID
+		}
+		if c.Type == "expense" && c.ParentID != nil && c.Name == "咖啡饮品" {
+			coffeeSubID = c.ID
+		}
+		if c.Type == "income" && c.ParentID == nil && c.Name == "工资" {
+			shopCatID = c.ID // reuse variable for income cat check
+		}
+	}
+	wallets, _ = env.walletRepo.ListWallets(context.Background(), bookID, false)
+	wechatWalletID = wallets[0].ID
+
+	// Test Wallet PUT balance update fix
+	rr, resp = doJSONReq(t, env.handler, http.MethodPut, "/api/v1/wallets/"+wechatWalletID, map[string]interface{}{
+		"balance":    500000,
+		"group_name": "日常消费",
+		"color":      "#3E8E63",
+	}, ownerH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update wallet failed: %d", rr.Code)
+	}
+	if int64(resp["data"].(map[string]interface{})["balance"].(float64)) != 500000 {
+		t.Fatalf("expected wallet balance 500000, got %v", resp["data"])
+	}
+
+	// Invite virtual member, email member, and join by code
+	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/books/"+bookID+"/virtual-members", map[string]string{
+		"name":  "家里猫咪",
+		"color": "#DE8A1E",
+	}, ownerH)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("add virtual member failed: %d", rr.Code)
+	}
+	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/books/"+bookID+"/invite-email", map[string]string{
+		"email": "partner@cat7.app",
+		"role":  "editor",
+	}, ownerH)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("invite email failed: %d", rr.Code)
+	}
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/books/join", map[string]string{
+		"invite_code": inviteCode,
+	}, guestH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("join by code failed: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Transactions: create with subcategory, title, include_budget=true and another with include_budget=false
+	today := time.Now().Format("2006-01-02")
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/transactions", map[string]interface{}{
+		"book_id":        bookID,
+		"type":           "expense",
+		"amount":         3850,
+		"date":           today,
+		"tx_time":        "10:15",
+		"wallet_id":      wechatWalletID,
+		"category_id":    coffeeSubID,
+		"title":          "瑞幸生椰拿铁",
+		"sub_category":   "咖啡饮品",
+		"note":           "早起提神",
+		"include_budget": true,
+	}, ownerH)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create tx1 failed: %d %s", rr.Code, rr.Body.String())
+	}
+	tx1ID := resp["data"].(map[string]interface{})["id"].(string)
+
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/transactions", map[string]interface{}{
+		"book_id":        bookID,
+		"type":           "expense",
+		"amount":         10000,
+		"date":           today,
+		"wallet_id":      wechatWalletID,
+		"category_id":    foodCatID,
+		"title":          "公司垫付聚餐",
+		"include_budget": false,
+		"reimburse":      true,
+	}, ownerH)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create tx2 failed: %d", rr.Code)
+	}
+	tx2ID := resp["data"].(map[string]interface{})["id"].(string)
+
+	// Query transactions by parent category ID should match subcategory tx1 as well!
+	rr, resp = doJSONReq(t, env.handler, http.MethodGet,
+		fmt.Sprintf("/api/v1/transactions?book_id=%s&category_id=%s&search=拿铁&page_size=200", bookID, foodCatID), nil, ownerH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list tx failed: %d", rr.Code)
+	}
+	txListData := resp["data"].(map[string]interface{})
+	if int(txListData["total"].(float64)) != 1 || int(txListData["page_size"].(float64)) != 200 {
+		t.Fatalf("expected 1 matched tx and page_size=200, got %+v", txListData)
+	}
+
+	// Budgets overview: only tx1 (3850) counts toward budget, tx2 (include_budget=false) does not!
+	now := time.Now()
+	rr, resp = doJSONReq(t, env.handler, http.MethodGet,
+		fmt.Sprintf("/api/v1/budgets?book_id=%s&year=%d&month=%d", bookID, now.Year(), int(now.Month())), nil, ownerH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get budgets failed: %d", rr.Code)
+	}
+	bov := resp["data"].(map[string]interface{})
+	if int64(bov["total_spent"].(float64)) != 3850 || int64(bov["total_budget"].(float64)) != 600000 {
+		t.Fatalf("expected total_spent=3850 total_budget=600000, got %+v", bov)
+	}
+
+	// Update category budget & total budget
+	rr, _ = doJSONReq(t, env.handler, http.MethodPut, "/api/v1/budgets/total", map[string]interface{}{
+		"book_id": bookID,
+		"budget":  500000,
+	}, ownerH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update total budget failed: %d", rr.Code)
+	}
+	rr, resp = doJSONReq(t, env.handler, http.MethodPut, "/api/v1/budgets/category", map[string]interface{}{
+		"book_id":      bookID,
+		"category_id":  foodCatID,
+		"limit_amount": 150000,
+	}, ownerH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update category budget failed: %d", rr.Code)
+	}
+
+	// Stats report: rolls up subcategory coffeeSubID into top category 餐饮
+	rr, resp = doJSONReq(t, env.handler, http.MethodGet,
+		fmt.Sprintf("/api/v1/reports/stats?book_id=%s&period=month&type=expense&year=%d&month=%d", bookID, now.Year(), int(now.Month())), nil, ownerH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get stats report failed: %d", rr.Code)
+	}
+	stats := resp["data"].(map[string]interface{})
+	if int64(stats["total_expense"].(float64)) != 13850 || int64(stats["budget_used"].(float64)) != 3850 {
+		t.Fatalf("unexpected stats totals: %+v", stats)
+	}
+	statCats := stats["categories"].([]interface{})
+	if len(statCats) != 1 || statCats[0].(map[string]interface{})["category_name"] != "餐饮" {
+		t.Fatalf("expected subcategory rolled up into 餐饮, got %+v", statCats)
+	}
+
+	// Batch delete both transactions -> wallet balance should return to 500000
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/transactions/batch-delete", map[string]interface{}{
+		"ids": []string{tx1ID, tx2ID},
+	}, ownerH)
+	if rr.Code != http.StatusOK || int(resp["data"].(map[string]interface{})["deleted"].(float64)) != 2 {
+		t.Fatalf("batch delete failed: %d %+v", rr.Code, resp)
+	}
+	wAfter, _ := env.walletRepo.GetWallet(context.Background(), wechatWalletID)
+	if wAfter.Balance != 500000 {
+		t.Fatalf("expected wallet balance restored to 500000 after batch delete, got %d", wAfter.Balance)
+	}
+
+	// Category duplicate validation & cascading delete of subcategories
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/categories", map[string]interface{}{
+		"book_id": bookID,
+		"type":    "expense",
+		"name":    "测试一级",
+	}, ownerH)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create custom category failed: %d", rr.Code)
+	}
+	customParentID := resp["data"].(map[string]interface{})["id"].(string)
+	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/categories", map[string]interface{}{
+		"book_id":   bookID,
+		"type":      "expense",
+		"name":      "测试一级",
+		"parent_id": customParentID,
+	}, ownerH)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("subcategory with same name under different parent_id should succeed, got %d", rr.Code)
+	}
+	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/categories", map[string]interface{}{
+		"book_id": bookID,
+		"type":    "expense",
+		"name":    "测试一级",
+	}, ownerH)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("duplicate top-level category should return 409, got %d", rr.Code)
+	}
+	rr, _ = doJSONReq(t, env.handler, http.MethodDelete, "/api/v1/categories/"+customParentID, nil, ownerH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("delete parent category failed: %d", rr.Code)
+	}
+	catsAfter, _ := env.catRepo.ListCategories(context.Background(), bookID, "expense")
+	for _, c := range catsAfter {
+		if c.Name == "测试一级" {
+			t.Fatalf("expected parent and child categories deleted together")
+		}
+	}
+}
+
+func TestRecurringAiAdminAndSchedulers(t *testing.T) {
+	env := setupTestEnv(t)
+	adminH := map[string]string{"Ugreen-User-ID": "u_admin", "Ugreen-User-Name": "管理员", "Ugreen-User-Type": "admin"}
+
+	// Seed default book
+	_, resp := doJSONReq(t, env.handler, http.MethodGet, "/api/v1/books", nil, adminH)
+	bookID := resp["data"].([]interface{})[0].(map[string]interface{})["id"].(string)
+	cats, _ := env.catRepo.ListCategories(context.Background(), bookID, "expense")
+	wallets, _ := env.walletRepo.ListWallets(context.Background(), bookID, false)
+
+	// Recurring CRUD + Toggle + Scheduler execution
+	today := time.Now().Format("2006-01-02")
+	rr, resp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/recurring", map[string]interface{}{
+		"book_id":     bookID,
+		"type":        "expense",
+		"category_id": cats[0].ID,
+		"title":       "每月房租",
+		"amount":      185000,
+		"cycle":       "每月",
+		"start_date":  today,
+		"next_date":   today,
+		"wallet_id":   wallets[0].ID,
+	}, adminH)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create recurring failed: %d %s", rr.Code, rr.Body.String())
+	}
+	ruleID := resp["data"].(map[string]interface{})["id"].(string)
+
+	// Run scheduler once -> executes due rule
+	executed := env.recurringScheduler.RunOnce(context.Background())
+	if executed != 1 {
+		t.Fatalf("expected 1 recurring rule executed, got %d", executed)
+	}
+	wAfter, _ := env.walletRepo.GetWallet(context.Background(), wallets[0].ID)
+	if wAfter.Balance != -185000 {
+		t.Fatalf("expected wallet balance -185000 after recurring execution, got %d", wAfter.Balance)
+	}
+
+	// Toggle & Delete recurring
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/recurring/"+ruleID+"/toggle", nil, adminH)
+	if rr.Code != http.StatusOK || resp["data"].(map[string]interface{})["is_active"] != false {
+		t.Fatalf("toggle recurring failed: %d %+v", rr.Code, resp)
+	}
+	rr, _ = doJSONReq(t, env.handler, http.MethodDelete, "/api/v1/recurring/"+ruleID, nil, adminH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("delete recurring failed: %d", rr.Code)
+	}
+
+	// AI Chat (expense draft) + AI Chat (query)
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/ai/chat", map[string]interface{}{
+		"book_id": bookID,
+		"message": "刚才在星巴克买咖啡花了 38.5 元用微信支付",
+	}, adminH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("ai chat failed: %d %s", rr.Code, rr.Body.String())
+	}
+	chatData := resp["data"].(map[string]interface{})
+	draft := chatData["draft"].(map[string]interface{})
+	if int64(draft["amount"].(float64)) != 3850 || draft["category_name"] != "餐饮" {
+		t.Fatalf("unexpected ai draft: %+v", draft)
+	}
+
+	// AI OCR Demo JSON & Multipart upload
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/ai/ocr", map[string]interface{}{
+		"book_id": bookID,
+		"demo":    "hema",
+	}, adminH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("ai ocr demo failed: %d", rr.Code)
+	}
+	ocrDraft := resp["data"].(map[string]interface{})["draft"].(map[string]interface{})
+	if int64(ocrDraft["amount"].(float64)) != 8650 {
+		t.Fatalf("expected 8650 cents for hema ocr, got %v", ocrDraft["amount"])
+	}
+
+	var mpBuf bytes.Buffer
+	mw := multipart.NewWriter(&mpBuf)
+	_ = mw.WriteField("book_id", bookID)
+	fw, _ := mw.CreateFormFile("file", "starbucks_receipt.jpg")
+	_, _ = fw.Write([]byte("fakejpgdata"))
+	_ = mw.Close()
+	mpReq := httptest.NewRequest(http.MethodPost, "/api/v1/ai/ocr", &mpBuf)
+	mpReq.Header.Set("Content-Type", mw.FormDataContentType())
+	mpReq.Header.Set("Ugreen-User-ID", "u_admin")
+	mpReq.Header.Set("Ugreen-User-Type", "admin")
+	mpRec := httptest.NewRecorder()
+	env.handler.ServeHTTP(mpRec, mpReq)
+	if mpRec.Code != http.StatusOK {
+		t.Fatalf("ai ocr multipart failed: %d %s", mpRec.Code, mpRec.Body.String())
+	}
+
+	// AI Insights & AI Test
+	rr, resp = doJSONReq(t, env.handler, http.MethodGet, "/api/v1/ai/insights?book_id="+bookID+"&period=month&type=expense&seed=1", nil, adminH)
+	if rr.Code != http.StatusOK || len(resp["data"].(map[string]interface{})["tips"].([]interface{})) != 3 {
+		t.Fatalf("ai insights failed: %d %+v", rr.Code, resp)
+	}
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/ai/test", map[string]string{}, adminH)
+	if rr.Code != http.StatusOK || resp["data"].(map[string]interface{})["connected"] != true {
+		t.Fatalf("ai test failed: %d %+v", rr.Code, resp)
+	}
+
+	// Admin endpoints & daily AI limit 429 enforcement
+	rr, _ = doJSONReq(t, env.handler, http.MethodPut, "/api/v1/admin/users/u_admin", map[string]interface{}{
+		"daily_ai_limit": 3,
+	}, adminH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update user daily limit failed: %d", rr.Code)
+	}
+	// Already made 3 calls (1 chat + 2 ocr), next call must return 429
+	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/ai/chat", map[string]interface{}{
+		"book_id": bookID,
+		"message": "超限测试 10 元",
+	}, adminH)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 after reaching daily ai limit, got %d", rr.Code)
+	}
+
+	rr, resp = doJSONReq(t, env.handler, http.MethodGet, "/api/v1/admin/overview", nil, adminH)
+	if rr.Code != http.StatusOK || int(resp["data"].(map[string]interface{})["today_ai_calls"].(float64)) != 3 {
+		t.Fatalf("admin overview failed: %d %+v", rr.Code, resp)
+	}
+	rr, _ = doJSONReq(t, env.handler, http.MethodGet, "/api/v1/admin/ai-usage?search=管理员", nil, adminH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin ai-usage failed: %d", rr.Code)
+	}
+	rr, _ = doJSONReq(t, env.handler, http.MethodPut, "/api/v1/admin/ai-config", map[string]interface{}{
+		"provider": "OpenAI 兼容接口",
+		"model":    "gpt-4o-mini",
+	}, adminH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin ai-config failed: %d", rr.Code)
+	}
+	rr, resp = doJSONReq(t, env.handler, http.MethodPut, "/api/v1/admin/system-config", map[string]interface{}{
+		"auto_backup_enabled": true,
+		"auto_backup_retain":  2,
+		"site_name":           "七喵记账NAS",
+	}, adminH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin system-config failed: %d", rr.Code)
+	}
+	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/admin/smtp-test", map[string]interface{}{}, adminH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin smtp-test failed: %d", rr.Code)
+	}
+
+	// Auto backup scheduler creates snapshot and prunes beyond retain=2
+	for i := 0; i < 3; i++ {
+		if _, err := env.autoBackupScheduler.ExecuteBackupAndPrune(context.Background(), 2); err != nil {
+			t.Fatalf("backup prune %d failed: %v", i, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	rr, resp = doJSONReq(t, env.handler, http.MethodGet, "/api/v1/snapshots", nil, adminH)
+	if rr.Code != http.StatusOK || len(resp["data"].([]interface{})) != 2 {
+		t.Fatalf("expected 2 retained snapshots, got %d %+v", rr.Code, resp)
+	}
+
+	// Swagger doc check
+	swReq := httptest.NewRequest(http.MethodGet, "/api/swagger/doc.json", nil)
+	swRec := httptest.NewRecorder()
+	env.handler.ServeHTTP(swRec, swReq)
+	if swRec.Code != http.StatusOK || !strings.Contains(swRec.Body.String(), "/api/v1/recurring") {
+		t.Fatalf("swagger doc check failed: %d", swRec.Code)
+	}
+
+	// User profile metrics check
+	rr, resp = doJSONReq(t, env.handler, http.MethodGet, "/api/v1/user/profile", nil, adminH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("profile failed: %d", rr.Code)
+	}
+	prof := resp["data"].(map[string]interface{})
+	if int(prof["total_transactions_count"].(float64)) != 1 || int(prof["streak_days"].(float64)) < 1 {
+		t.Fatalf("expected user profile metrics populated, got %+v", prof)
+	}
+
+	// Legacy Reports Regression (/monthly, /trend, /daily)
+	now := time.Now()
+	rr, resp = doJSONReq(t, env.handler, http.MethodGet,
+		fmt.Sprintf("/api/v1/reports/monthly?book_id=%s&year=%d&month=%d", bookID, now.Year(), int(now.Month())), nil, adminH)
+	if rr.Code != http.StatusOK || int64(resp["data"].(map[string]interface{})["total_expense"].(float64)) != 185000 {
+		t.Fatalf("monthly report regression failed: %d %+v", rr.Code, resp)
+	}
+	rr, _ = doJSONReq(t, env.handler, http.MethodGet, "/api/v1/reports/trend?book_id="+bookID+"&months=6", nil, adminH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("trend report regression failed: %d", rr.Code)
+	}
+	rr, _ = doJSONReq(t, env.handler, http.MethodGet,
+		fmt.Sprintf("/api/v1/reports/daily?book_id=%s&year=%d&month=%d", bookID, now.Year(), int(now.Month())), nil, adminH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("daily report regression failed: %d", rr.Code)
+	}
+
+	// WeChat CSV Import Preview + Commit + Export CSV Regression
+	wechatCSV := "\xef\xbb\xbf微信支付账单明细\n----------------------微信支付账单明细列表--------------------\n" +
+		"交易时间,交易类型,交易对方,商品,收/支,金额(元),支付方式,当前状态,交易单号,商户单号,备注\n" +
+		today + " 12:00:00,商户消费,星巴克咖啡,燕麦拿铁,支出,¥35.00,零钱,支付成功,WX10001,M10001,咖啡\n"
+	var wxBuf bytes.Buffer
+	wxW := multipart.NewWriter(&wxBuf)
+	wxFile, _ := wxW.CreateFormFile("file", "wechat.csv")
+	_, _ = wxFile.Write([]byte(wechatCSV))
+	_ = wxW.Close()
+	wxReq := httptest.NewRequest(http.MethodPost, "/api/v1/imports/wechat", &wxBuf)
+	wxReq.Header.Set("Content-Type", wxW.FormDataContentType())
+	wxReq.Header.Set("Ugreen-User-ID", "u_admin")
+	wxReq.Header.Set("Ugreen-User-Type", "admin")
+	wxRec := httptest.NewRecorder()
+	env.handler.ServeHTTP(wxRec, wxReq)
+	if wxRec.Code != http.StatusOK {
+		t.Fatalf("wechat import preview failed: %d %s", wxRec.Code, wxRec.Body.String())
+	}
+	var wxResp map[string]interface{}
+	_ = json.Unmarshal(wxRec.Body.Bytes(), &wxResp)
+	parsedItems := wxResp["data"].(map[string]interface{})["items"].([]interface{})
+	if len(parsedItems) != 1 {
+		t.Fatalf("expected 1 parsed wechat item, got %d", len(parsedItems))
+	}
+
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/imports/commit", map[string]interface{}{
+		"book_id":   bookID,
+		"wallet_id": wallets[0].ID,
+		"items":     parsedItems,
+	}, adminH)
+	if rr.Code != http.StatusOK || int(resp["data"].(map[string]interface{})["inserted"].(float64)) != 1 {
+		t.Fatalf("import commit failed: %d %+v", rr.Code, resp)
+	}
+
+	expReq := httptest.NewRequest(http.MethodGet, "/api/v1/export?book_id="+bookID, nil)
+	expReq.Header.Set("Ugreen-User-ID", "u_admin")
+	expReq.Header.Set("Ugreen-User-Type", "admin")
+	expRec := httptest.NewRecorder()
+	env.handler.ServeHTTP(expRec, expReq)
+	if expRec.Code != http.StatusOK || !strings.Contains(expRec.Body.String(), "35.00") || !strings.Contains(expRec.Body.String(), "1850.00") {
+		t.Fatalf("export csv failed: code=%d body=%s", expRec.Code, expRec.Body.String())
+	}
+}
+
+func TestModelContextAdminHelper(t *testing.T) {
+	u1 := &model.UserContext{ID: "1", Type: "users", Role: "user"}
+	if u1.IsAdmin() {
+		t.Fatalf("expected non-admin")
+	}
+	u2 := &model.UserContext{ID: "2", Type: "users", Role: "admin"}
+	if !u2.IsAdmin() {
+		t.Fatalf("expected admin when role=admin")
+	}
+}
+
+func TestAuthMiddlewareProductionVsDevFallback(t *testing.T) {
+	env := setupTestEnv(t)
+
+	// 1. Production mode (default, APP_ENV empty): missing gateway headers & token -> 401 Unauthorized
+	t.Setenv("APP_ENV", "")
+	t.Setenv("STRICT_AUTH", "")
+	rr, _ := doJSONReq(t, env.handler, http.MethodGet, "/api/v1/user/profile", nil, nil)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 in production mode without auth, got %d", rr.Code)
+	}
+
+	// Public routes and static SPA routes remain accessible without auth in production mode
+	rr, _ = doJSONReq(t, env.handler, http.MethodGet, "/api/v1/health", nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 on health route in production mode, got %d", rr.Code)
+	}
+	rr, _ = doJSONReq(t, env.handler, http.MethodGet, "/", nil, nil)
+	if rr.Code == http.StatusUnauthorized {
+		t.Fatalf("expected static root route not to return 401 in production mode, got %d", rr.Code)
+	}
+
+	// 2. Development mode (APP_ENV=development): missing auth falls back to dev user
+	t.Setenv("APP_ENV", "development")
+	rr, _ = doJSONReq(t, env.handler, http.MethodGet, "/api/v1/user/profile", nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 in development fallback mode, got %d", rr.Code)
+	}
+
+	// 3. STRICT_AUTH=1 overrides APP_ENV=development
+	t.Setenv("STRICT_AUTH", "1")
+	rr, _ = doJSONReq(t, env.handler, http.MethodGet, "/api/v1/user/profile", nil, nil)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 when STRICT_AUTH=1, got %d", rr.Code)
+	}
+}
+
+func TestAuthStatusAndGatewayQuickLoginFlow(t *testing.T) {
+	env := setupTestEnv(t)
+	t.Setenv("APP_ENV", "")
+	t.Setenv("STRICT_AUTH", "")
+
+	// 1. Fresh install: first_install=true, has_registered_users=false
+	rr, resp := doJSONReq(t, env.handler, http.MethodGet, "/api/v1/auth/status", nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /auth/status failed: %d %v", rr.Code, resp)
+	}
+	statusData := resp["data"].(map[string]interface{})
+	if statusData["first_install"] != true || statusData["has_registered_users"] != false {
+		t.Fatalf("expected first_install=true, got %v", statusData)
+	}
+
+	// 2. Gateway login without headers -> 401
+	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/gateway", map[string]interface{}{}, nil)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without gateway headers, got %d", rr.Code)
+	}
+
+	// 3. Gateway login with UGOS headers (including percent-encoded UTF-8 name, unregistered user) -> need_register + bind_ticket
+	gwHeaders := map[string]string{
+		"Ugreen-User-ID":   "ugos_1001",
+		"Ugreen-User-Name": "%E7%BB%BF%E8%81%94%E6%B7%98%E4%B8%83",
+		"Ugreen-User-Type": "users",
+	}
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/gateway", map[string]interface{}{}, gwHeaders)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("POST /auth/gateway failed: %d %v", rr.Code, resp)
+	}
+	gwData := resp["data"].(map[string]interface{})
+	if gwData["status"] != "need_register" {
+		t.Fatalf("expected status=need_register, got %v", gwData)
+	}
+	if gwData["suggested_username"] != "绿联淘七" || gwData["suggested_name"] != "绿联淘七" {
+		t.Fatalf("expected decoded chinese suggested name, got username=%v name=%v", gwData["suggested_username"], gwData["suggested_name"])
+	}
+	bindTicket, _ := gwData["bind_ticket"].(string)
+	if !strings.HasPrefix(bindTicket, "cat7bind_") {
+		t.Fatalf("expected cat7bind_ ticket prefix, got %q", bindTicket)
+	}
+
+	// 4. Enable email verification and confirm gateway bind registration enforces the exact same rule
+	if err := env.settingsRepo.SaveRegConfig(context.Background(), &model.RegConfig{
+		AllowRegister:       true,
+		RequireEmailVerify:  true,
+		DefaultDailyAiLimit: 30,
+	}); err != nil {
+		t.Fatalf("SaveRegConfig failed: %v", err)
+	}
+
+	// Missing verification code must be rejected even with bind_ticket
+	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/register", map[string]interface{}{
+		"username":    "taoqi_nas",
+		"name":        "淘七",
+		"email":       "taoqi@example.com",
+		"password":    "pass123456",
+		"avatar":      "/cats/cat_1.png",
+		"bind_ticket": bindTicket,
+	}, nil)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when email verification code is missing, got %d", rr.Code)
+	}
+
+	// Fetch demo_code and complete registration
+	rr, codeResp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/send-code", map[string]interface{}{
+		"email":   "taoqi@example.com",
+		"purpose": "register",
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("send-code failed: %d", rr.Code)
+	}
+	demoCode, _ := codeResp["data"].(map[string]interface{})["demo_code"].(string)
+	if demoCode == "" {
+		t.Fatalf("expected demo_code in test environment")
+	}
+
+	rr, regResp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/register", map[string]interface{}{
+		"username":    "taoqi_nas",
+		"name":        "淘七",
+		"email":       "taoqi@example.com",
+		"code":        demoCode,
+		"password":    "pass123456",
+		"avatar":      "/cats/cat_2.png",
+		"bind_ticket": bindTicket,
+	}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("gateway bind register failed: %d %v", rr.Code, regResp)
+	}
+	regData := regResp["data"].(map[string]interface{})
+	token, _ := regData["token"].(string)
+	if !strings.HasPrefix(token, "cat7_") {
+		t.Fatalf("expected cat7_ bearer token, got %q", token)
+	}
+	userMap := regData["user"].(map[string]interface{})
+	if userMap["username"] != "taoqi_nas" || userMap["gateway_bound"] != true || userMap["role"] != "admin" {
+		t.Fatalf("unexpected registered user profile: %v", userMap)
+	}
+
+	// 5. Status reflects registered state
+	rr, resp = doJSONReq(t, env.handler, http.MethodGet, "/api/v1/auth/status", nil, nil)
+	statusData = resp["data"].(map[string]interface{})
+	if statusData["first_install"] != false || statusData["has_registered_users"] != true {
+		t.Fatalf("expected first_install=false after registration, got %v", statusData)
+	}
+
+	// 6. Subsequent gateway login authenticates immediately with backend token
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/gateway", map[string]interface{}{}, gwHeaders)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("second gateway login failed: %d %v", rr.Code, resp)
+	}
+	gwData = resp["data"].(map[string]interface{})
+	if gwData["status"] != "authenticated" {
+		t.Fatalf("expected authenticated on repeat gateway login, got %v", gwData)
+	}
+
+	// 7. Subsequent login via username + password and standalone Bearer token usage without gateway headers
+	rr, loginResp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/login", map[string]interface{}{
+		"account":  "taoqi_nas",
+		"password": "pass123456",
+		"mode":     "password",
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("username password login failed: %d %v", rr.Code, loginResp)
+	}
+	loginToken, _ := loginResp["data"].(map[string]interface{})["token"].(string)
+	if !strings.HasPrefix(loginToken, "cat7_") {
+		t.Fatalf("expected cat7_ login token, got %q", loginToken)
+	}
+
+	rr, profResp := doJSONReq(t, env.handler, http.MethodGet, "/api/v1/user/profile", nil, map[string]string{
+		"Authorization": "Bearer " + loginToken,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected bearer token profile access without gateway headers, got %d %v", rr.Code, profResp)
+	}
+	if profResp["data"].(map[string]interface{})["username"] != "taoqi_nas" {
+		t.Fatalf("profile mismatch: %v", profResp)
+	}
+}
+
+func TestLegacyGatewayUserUpgradePreservesBooks(t *testing.T) {
+	env := setupTestEnv(t)
+	t.Setenv("APP_ENV", "")
+	t.Setenv("STRICT_AUTH", "")
+
+	legacyHeaders := map[string]string{
+		"Ugreen-User-ID":   "ugos_legacy_88",
+		"Ugreen-User-Name": "老张",
+		"Ugreen-User-Type": "users",
+	}
+
+	// Legacy implicit gateway request creates user & custom book without email/password
+	rr, profBefore := doJSONReq(t, env.handler, http.MethodGet, "/api/v1/user/profile", nil, legacyHeaders)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("legacy profile init failed: %d", rr.Code)
+	}
+	legacyUserID := profBefore["data"].(map[string]interface{})["user_id"].(string)
+
+	rr, createBookResp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/books", map[string]interface{}{
+		"name":     "老张家庭账本",
+		"currency": "CNY",
+	}, legacyHeaders)
+	if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+		t.Fatalf("legacy create book failed: %d %v", rr.Code, createBookResp)
+	}
+
+	// Status should still indicate no formally registered account yet
+	_, statusResp := doJSONReq(t, env.handler, http.MethodGet, "/api/v1/auth/status", nil, nil)
+	if statusResp["data"].(map[string]interface{})["first_install"] != true {
+		t.Fatalf("expected first_install=true before legacy user completes registration")
+	}
+
+	// Gateway quick login asks legacy user to complete email/username/password registration
+	rr, gwResp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/gateway", map[string]interface{}{}, legacyHeaders)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("legacy gateway login failed: %d %v", rr.Code, gwResp)
+	}
+	gwData := gwResp["data"].(map[string]interface{})
+	if gwData["status"] != "need_register" {
+		t.Fatalf("expected legacy user without email/password to need_register, got %v", gwData)
+	}
+	bindTicket := gwData["bind_ticket"].(string)
+
+	rr, regResp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/register", map[string]interface{}{
+		"username":    "laozhang",
+		"name":        "老张已升级",
+		"email":       "laozhang@example.com",
+		"password":    "secret123",
+		"avatar":      "/cats/cat_3.png",
+		"bind_ticket": bindTicket,
+	}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("legacy user upgrade failed: %d %v", rr.Code, regResp)
+	}
+	regData := regResp["data"].(map[string]interface{})
+	upgradedUser := regData["user"].(map[string]interface{})
+	if upgradedUser["user_id"] != legacyUserID {
+		t.Fatalf("expected same user_id=%s after upgrade, got %v", legacyUserID, upgradedUser["user_id"])
+	}
+
+	// Access books purely via issued backend Bearer token (without any gateway headers)
+	bearer := regData["token"].(string)
+	rr, booksResp := doJSONReq(t, env.handler, http.MethodGet, "/api/v1/books", nil, map[string]string{
+		"Authorization": "Bearer " + bearer,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /books with token failed: %d %v", rr.Code, booksResp)
+	}
+	rawBooks := fmt.Sprintf("%v", booksResp["data"])
+	if !strings.Contains(rawBooks, "老张家庭账本") {
+		t.Fatalf("expected legacy book preserved after upgrade, got %s", rawBooks)
+	}
+}

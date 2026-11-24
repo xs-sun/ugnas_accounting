@@ -10,6 +10,126 @@ export type WalletType =
   | 'custom'
   | 'other';
 
+// ==================== Auth & User ====================
+
+export type VerifyCodePurpose = 'register' | 'login' | 'forgot' | 'bind' | string;
+
+export interface SendCodeRequest {
+  email: string;
+  purpose: VerifyCodePurpose;
+}
+
+export interface SendCodeResponse {
+  sent: boolean;
+  expires_in: number;
+  demo_code?: string;
+  smtp_sent: boolean;
+}
+
+export interface RegisterRequest {
+  username?: string;
+  name: string;
+  email: string;
+  code?: string;
+  password: string;
+  invite_code?: string;
+  avatar?: string;
+  bind_ticket?: string;
+}
+
+export interface LoginRequest {
+  account?: string;
+  username?: string;
+  email?: string;
+  password?: string;
+  code?: string;
+  mode?: 'password' | 'code';
+}
+
+export interface AuthStatusResponse {
+  first_install: boolean;
+  has_registered_users: boolean;
+  total_users: number;
+  gateway_header_detected: boolean;
+  allow_register: boolean;
+  require_email_verify: boolean;
+  require_invite_code: boolean;
+}
+
+export interface GatewayAuthResponse {
+  status: 'authenticated' | 'need_register';
+  token?: string;
+  user?: UserProfile;
+  bind_ticket?: string;
+  gateway_uid?: string;
+  suggested_username?: string;
+  suggested_name?: string;
+}
+
+export interface ForgotPasswordRequest {
+  email: string;
+  code: string;
+  new_password: string;
+}
+
+export interface ForgotPasswordResponse {
+  reset: boolean;
+}
+
+export interface UserProfile {
+  user_id: string;
+  username?: string;
+  user_name: string;
+  user_type: string;
+  email: string;
+  avatar: string;
+  role: 'admin' | 'member' | 'guest' | string;
+  email_bound: boolean;
+  gateway_bound?: boolean;
+  daily_ai_limit: number;
+  today_ai_count: number;
+  streak_days: number;
+  recorded_days: number;
+  total_transactions_count: number;
+  created_books_count: number;
+  joined_books_count: number;
+  total_books_count: number;
+  total_wallets_count: number;
+  health_score: number;
+  health_label: string;
+  savings_rate: number;
+}
+
+export interface AuthResponse {
+  token: string;
+  user: UserProfile;
+}
+
+export interface UpdateProfileRequest {
+  name?: string;
+  avatar?: string;
+}
+
+export interface BindEmailRequest {
+  email: string;
+  code: string;
+}
+
+// ==================== Books & Members ====================
+
+export interface BookMember {
+  book_id: string;
+  user_id: string;
+  user_name: string;
+  role: 'owner' | 'editor' | 'viewer' | string;
+  avatar: string;
+  color: string;
+  is_virtual: boolean;
+  status: string;
+  is_me: boolean;
+  created_at: string;
+}
+
 export interface Book {
   id: string;
   name: string;
@@ -17,23 +137,30 @@ export interface Book {
   description: string;
   owner_id: string;
   role?: string;
+  color: string;
+  budget: number; // in cents
+  invite_code: string;
+  tx_count: number;
+  members: BookMember[];
   created_at: string;
   updated_at: string;
 }
 
-export interface BookMember {
-  book_id: string;
-  user_id: string;
-  user_name: string;
-  role: 'owner' | 'editor' | 'viewer';
-  created_at: string;
+export interface InviteEmailResponse {
+  member: BookMember;
+  invite_code: string;
+  smtp_sent: boolean;
 }
+
+// ==================== Wallets ====================
 
 export interface Wallet {
   id: string;
   book_id: string;
   type: WalletType;
   name: string;
+  group_name: string;
+  color: string;
   balance: number; // in cents
   credit_limit: number; // in cents
   billing_day: number;
@@ -46,10 +173,12 @@ export interface Wallet {
 }
 
 export interface WalletSummary {
-  total_assets: number;
-  total_liabilities: number;
-  net_assets: number;
+  total_assets: number; // in cents
+  total_liabilities: number; // in cents
+  net_assets: number; // in cents
 }
+
+// ==================== Categories & Tags ====================
 
 export interface Category {
   id: string;
@@ -58,8 +187,15 @@ export interface Category {
   name: string;
   icon: string;
   color: string;
+  bg_color: string;
+  is_custom: boolean;
+  sort_order: number;
   parent_id?: string | null;
   created_at: string;
+}
+
+export interface CategoryTreeNode extends Category {
+  children: Category[];
 }
 
 export interface Tag {
@@ -70,16 +206,23 @@ export interface Tag {
   created_at: string;
 }
 
+// ==================== Transactions ====================
+
 export interface Transaction {
   id: string;
   book_id: string;
   type: TransactionType;
   amount: number; // in cents
-  date: string;
+  date: string; // YYYY-MM-DD
+  tx_time: string; // HH:mm
   wallet_id: string;
   to_wallet_id?: string | null;
   category_id?: string | null;
+  title: string;
+  sub_category: string;
   note: string;
+  include_budget: boolean;
+  reimburse: boolean;
   order_no?: string;
   created_by: string;
   created_at: string;
@@ -89,16 +232,129 @@ export interface Transaction {
   category_name?: string;
   category_icon?: string;
   category_color?: string;
+  category_bg_color?: string;
   wallet_name?: string;
   to_wallet_name?: string;
 }
+
+export interface TransactionListParams {
+  book_id?: string;
+  start_date?: string;
+  end_date?: string;
+  wallet_id?: string;
+  category_id?: string;
+  type?: string;
+  search?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export interface TransactionListResponse {
+  items: Transaction[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface CreateTransactionPayload {
+  book_id: string;
+  type: TransactionType;
+  amount: number; // in cents
+  date: string;
+  tx_time?: string;
+  wallet_id: string;
+  to_wallet_id?: string | null;
+  category_id?: string | null;
+  title?: string;
+  sub_category?: string;
+  note?: string;
+  include_budget?: boolean;
+  reimburse?: boolean;
+  tag_ids?: string[];
+}
+
+// ==================== Budgets ====================
+
+export interface CategoryBudgetItem {
+  category_id: string;
+  category_name: string;
+  category_icon: string;
+  category_color: string;
+  bg_color: string;
+  limit_amount: number; // in cents
+  spent_amount: number; // in cents
+  remaining_amount: number; // in cents
+  percentage: number;
+}
+
+export interface BudgetOverview {
+  book_id: string;
+  year: number;
+  month: number;
+  total_budget: number; // in cents
+  total_spent: number; // in cents
+  remaining_budget: number; // in cents
+  remaining_days: number;
+  daily_allowance: number; // in cents
+  percentage: number;
+  categories: CategoryBudgetItem[];
+}
+
+// ==================== Recurring Rules ====================
+
+export type RecurringCycle = 'daily' | 'weekly' | 'monthly' | 'yearly' | string;
+
+export interface RecurringRule {
+  id: string;
+  book_id: string;
+  type: 'expense' | 'income';
+  category_id: string;
+  category_name: string;
+  category_icon: string;
+  category_color: string;
+  bg_color: string;
+  sub_category: string;
+  title: string;
+  amount: number; // in cents
+  cycle: RecurringCycle;
+  start_date: string;
+  end_rule: string;
+  next_date: string;
+  executed_count: number;
+  wallet_id: string;
+  wallet_name: string;
+  exclude_stats: boolean;
+  is_active: boolean;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateRecurringPayload {
+  book_id: string;
+  type: 'expense' | 'income';
+  category_id: string;
+  sub_category?: string;
+  title: string;
+  amount: number; // in cents
+  cycle: RecurringCycle;
+  start_date: string;
+  end_rule?: string;
+  wallet_id: string;
+  exclude_stats?: boolean;
+}
+
+// ==================== Reports & Stats ====================
+
+export type StatsPeriod = 'week' | 'month' | 'year';
 
 export interface CategoryReportItem {
   category_id: string;
   category_name: string;
   category_icon: string;
   category_color: string;
-  amount: number;
+  bg_color?: string;
+  amount: number; // in cents
   total_amount?: number;
   count: number;
   percentage: number;
@@ -107,16 +363,16 @@ export interface CategoryReportItem {
 export interface MonthlyReport {
   year: number;
   month: number;
-  total_expense: number;
-  total_income: number;
-  net_savings: number;
+  total_expense: number; // in cents
+  total_income: number; // in cents
+  net_savings: number; // in cents
   categories: CategoryReportItem[];
 }
 
 export interface TrendMonthItem {
   month: string;
-  expense: number;
-  income: number;
+  expense: number; // in cents
+  income: number; // in cents
 }
 
 export interface TrendReport {
@@ -125,9 +381,185 @@ export interface TrendReport {
 
 export interface DailyReportItem {
   date: string;
-  expense: number;
-  income: number;
+  expense: number; // in cents
+  income: number; // in cents
 }
+
+export interface StatsDailySeriesItem {
+  date: string;
+  label: string;
+  expense: number; // in cents
+  income: number; // in cents
+}
+
+export interface StatsReport {
+  period: StatsPeriod;
+  type: 'expense' | 'income';
+  start_date: string;
+  end_date: string;
+  total_expense: number; // in cents
+  total_income: number; // in cents
+  net_savings: number; // in cents
+  savings_rate: number;
+  budget: number; // in cents
+  budget_used: number; // in cents
+  categories: CategoryReportItem[];
+  daily_series: StatsDailySeriesItem[];
+  top_transactions: Transaction[];
+}
+
+// ==================== AI Features ====================
+
+export interface AiUsageInfo {
+  today_count: number;
+  daily_limit: number;
+  remaining: number;
+}
+
+export interface AiDraft {
+  type: 'expense' | 'income';
+  amount: number; // in cents
+  title: string;
+  note: string;
+  category_id: string;
+  category_name: string;
+  sub_category: string;
+  category_icon: string;
+  category_color: string;
+  bg_color: string;
+  wallet_id: string;
+  wallet_name: string;
+  date: string;
+}
+
+export interface AiChatResponse {
+  reply: string;
+  draft: AiDraft | null;
+  usage: AiUsageInfo;
+}
+
+export interface AiOcrResponse {
+  reply: string;
+  draft: AiDraft;
+  raw_text: string;
+  usage: AiUsageInfo;
+}
+
+export interface AiInsightTip {
+  tag: string;
+  color: string;
+  bg: string;
+  title: string;
+  desc: string;
+}
+
+export interface AiInsightsResponse {
+  summary: string;
+  tips: AiInsightTip[];
+}
+
+export interface AiTestResponse {
+  connected: boolean;
+  mode: string;
+  latency_ms: number;
+  model: string;
+  message: string;
+}
+
+export interface AiChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  isVoice?: boolean;
+  image?: string;
+  imageLabel?: string;
+  draft?: AiDraft | null;
+  saved?: boolean;
+  savedTxId?: string;
+  editing?: boolean;
+}
+
+// ==================== Admin Console ====================
+
+export interface AdminDauItem {
+  date: string;
+  label: string;
+  tx_count: number;
+  active_users?: number;
+}
+
+export interface AdminUserItem {
+  user_id: string;
+  user_name: string;
+  email: string;
+  avatar: string;
+  role: string;
+  is_active: boolean;
+  daily_ai_limit: number;
+  today_ai_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  books_count: number;
+  tx_count: number;
+  last_active: string;
+}
+
+export interface AdminOverview {
+  total_users: number;
+  active_users: number;
+  weekly_active_users: number;
+  total_transactions: number;
+  weekly_new_transactions: number;
+  total_tokens: number;
+  ai_provider: string;
+  ai_model: string;
+  dau_series: AdminDauItem[];
+  users: AdminUserItem[];
+}
+
+export interface AdminAiConfig {
+  provider: string;
+  model: string;
+  base_url: string;
+  api_key: string;
+  has_api_key?: boolean;
+  enabled?: boolean;
+}
+
+export interface AdminAiUsageResponse {
+  total_input_tokens: number;
+  total_output_tokens: number;
+  estimated_cost_yuan?: number;
+  users: AdminUserItem[];
+}
+
+export interface AdminRegConfig {
+  allow_public_register: boolean;
+  require_email_verify: boolean;
+  require_invite_code: boolean;
+  invite_code: string;
+  default_daily_ai_limit?: number;
+}
+
+export interface AdminSystemConfig {
+  smtp_host: string;
+  smtp_port: number | string;
+  smtp_user: string;
+  smtp_pass: string;
+  smtp_from?: string;
+  smtp_tls?: boolean;
+  auto_backup: boolean;
+  backup_cycle: string;
+  backup_path: string;
+  keep_count: number;
+}
+
+export interface AdminSmtpTestResponse {
+  sent: boolean;
+  message: string;
+}
+
+// ==================== Snapshots & Import/Export ====================
 
 export interface Snapshot {
   id: string;
@@ -149,15 +581,3 @@ export interface ImportedItem {
   suggested_category_id?: string;
   note: string;
 }
-
-export interface UserProfile {
-  user_id: string;
-  user_name: string;
-  user_type: string;
-  created_books_count: number;
-  joined_books_count: number;
-  total_books_count: number;
-  total_transactions_count: number;
-  total_wallets_count: number;
-}
-

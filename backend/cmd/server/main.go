@@ -24,7 +24,7 @@ import (
 
 const (
 	AppID   = "com.xsguyu.accounting"
-	Version = "0.1.7"
+	Version = "0.2.0"
 )
 
 func isDir(p string) bool {
@@ -55,7 +55,6 @@ func ensureWritableDir(targetDir, fallbackName string) string {
 }
 
 func resolveAppPaths() (appRoot, dataDir, logDir, staticDir string) {
-	// 1. Detect base app directory from executable location
 	if execPath, err := os.Executable(); err == nil {
 		if evalPath, err := filepath.EvalSymlinks(execPath); err == nil {
 			execPath = evalPath
@@ -71,13 +70,10 @@ func resolveAppPaths() (appRoot, dataDir, logDir, staticDir string) {
 		appRoot = "."
 	}
 
-	// Detect volume directory if installed under /volumeX/@appstore/com.xsguyu.accounting
 	volumeDir := filepath.Dir(filepath.Dir(appRoot))
 	ugDataCandidate := filepath.Join(volumeDir, "@appdata", AppID)
 	ugLogCandidate := filepath.Join(volumeDir, "@applog", AppID)
 
-	// 2. Resolve Data Directory
-	// UGOS Pro standard: /volume*/@appdata/<appId>
 	if envData := os.Getenv("UGAPP_DATA_DIR"); envData != "" {
 		dataDir = envData
 	} else if isDir(ugDataCandidate) {
@@ -92,8 +88,6 @@ func resolveAppPaths() (appRoot, dataDir, logDir, staticDir string) {
 		dataDir = filepath.Join(appRoot, "data")
 	}
 
-	// 3. Resolve Log Directory
-	// UGOS Pro standard: /volume*/@applog/<appId>
 	if envLog := os.Getenv("UGAPP_LOG_DIR"); envLog != "" {
 		logDir = envLog
 	} else if isDir(ugLogCandidate) {
@@ -112,7 +106,6 @@ func resolveAppPaths() (appRoot, dataDir, logDir, staticDir string) {
 		logDir = filepath.Join(appRoot, "log")
 	}
 
-	// 4. Resolve Static Directory
 	if envStatic := os.Getenv("STATIC_DIR"); envStatic != "" && isDir(envStatic) {
 		staticDir = envStatic
 	} else if installDir := os.Getenv("UGAPP_INSTALL_DIR"); installDir != "" && isDir(filepath.Join(installDir, "www")) {
@@ -133,7 +126,6 @@ func resolveAppPaths() (appRoot, dataDir, logDir, staticDir string) {
 }
 
 func main() {
-	// Immediately initialize logging to stdout and stderr so no panic or startup message is lost
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds | log.Lshortfile)
 	log.SetOutput(io.MultiWriter(os.Stdout, os.Stderr))
 
@@ -149,16 +141,13 @@ func main() {
 
 	appRoot, dataDir, logDir, staticDir := resolveAppPaths()
 
-	// Switch working directory to appRoot if valid
 	if appRoot != "" && appRoot != "." {
 		_ = os.Chdir(appRoot)
 	}
 
-	// Ensure directories are writable with graceful fallback to /tmp
 	dataDir = ensureWritableDir(dataDir, "data")
 	logDir = ensureWritableDir(logDir, "log")
 
-	// Setup multi-logging (stdout + stderr + log files)
 	writers := []io.Writer{os.Stdout, os.Stderr}
 	logFilePath := filepath.Join(logDir, "accounting.log")
 	if logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
@@ -177,7 +166,6 @@ func main() {
 	log.Printf("[INFO] Static frontend directory: %s", staticDir)
 	log.Printf("[INFO] Target port: %d", port)
 
-	// Initialize SQLite Database with WAL, mmap, and pre-agg triggers
 	db, err := repository.InitDB(dataDir)
 	if err != nil {
 		log.Fatalf("[FATAL] Database initialization failed: %v", err)
@@ -190,19 +178,32 @@ func main() {
 	catRepo := repository.NewCategoryRepo(db)
 	txRepo := repository.NewTransactionRepo(db)
 	snapshotRepo := repository.NewSnapshotRepo(db)
+	userRepo := repository.NewUserRepo(db)
+	budgetRepo := repository.NewBudgetRepo(db)
+	recurringRepo := repository.NewRecurringRepo(db)
+	settingsRepo := repository.NewSettingsRepo(db, dataDir)
 
 	// Initialize Services
 	snapshotService := service.NewSnapshotService(db, snapshotRepo, dataDir)
 	importService := service.NewImportService(db)
 	exportService := service.NewExportService(db)
+	authService := service.NewAuthService(userRepo, settingsRepo)
+	aiService := service.NewAiService(bookRepo, catRepo, walletRepo, txRepo, userRepo, settingsRepo)
+	recurringScheduler := service.NewRecurringScheduler(recurringRepo, txRepo)
+	autoBackupScheduler := service.NewAutoBackupScheduler(snapshotService, settingsRepo)
 
 	// Initialize Handlers
-	userHandler := handler.NewUserHandler(bookRepo, walletRepo, txRepo)
-	bookHandler := handler.NewBookHandler(bookRepo)
+	authHandler := handler.NewAuthHandler(userRepo, bookRepo, walletRepo, settingsRepo, authService)
+	userHandler := handler.NewUserHandler(bookRepo, walletRepo, txRepo, userRepo, settingsRepo, dataDir)
+	bookHandler := handler.NewBookHandler(bookRepo, userRepo, authService)
 	walletHandler := handler.NewWalletHandler(walletRepo, bookRepo)
 	catHandler := handler.NewCategoryHandler(catRepo)
 	txHandler := handler.NewTransactionHandler(txRepo, bookRepo, walletRepo, dataDir)
 	reportHandler := handler.NewReportHandler(txRepo)
+	budgetHandler := handler.NewBudgetHandler(budgetRepo, bookRepo)
+	recurringHandler := handler.NewRecurringHandler(recurringRepo)
+	aiHandler := handler.NewAiHandler(aiService)
+	adminHandler := handler.NewAdminHandler(settingsRepo, userRepo, authService)
 	impExpHandler := handler.NewImportExportHandler(importService, exportService)
 	snapshotHandler := handler.NewSnapshotHandler(snapshotService)
 
@@ -214,18 +215,23 @@ func main() {
 
 	router := handler.NewRouter(
 		routerConfig,
+		authHandler,
 		userHandler,
 		bookHandler,
 		walletHandler,
 		catHandler,
 		txHandler,
 		reportHandler,
+		budgetHandler,
+		recurringHandler,
+		aiHandler,
+		adminHandler,
 		impExpHandler,
 		snapshotHandler,
 	)
 
-	// Chain middlewares: CORS -> Auth -> Router
-	handlerChain := handler.CORSMiddleware(handler.AuthMiddleware(router))
+	authMiddleware := handler.NewAuthMiddleware(userRepo, authService)
+	handlerChain := handler.CORSMiddleware(authMiddleware(router))
 
 	addr := fmt.Sprintf(":%d", port)
 	srv := &http.Server{
@@ -244,6 +250,10 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Start background schedulers
+	recurringScheduler.Start(ctx)
+	autoBackupScheduler.Start(ctx)
 
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {

@@ -1,12 +1,8 @@
 import { createApp } from 'vue';
 import './style.css';
 import App from './App.vue';
-import UGOSCore from '@ugreen-nas/core';
+import { initUGOSCoreIfEmbedded } from '@/api/client';
 
-try {
-  UGOSCore.init();
-} catch (err) {
-  console.warn('[UGOS] Core init warning:', err);
-}
+void initUGOSCoreIfEmbedded();
 
 createApp(App).mount('#app');

@@ -16,12 +16,19 @@ book_id=$(echo "$HTTP_BODY" | jq -r '.data.id')
 bw=$(jq -n -c --arg bid "$book_id" '{book_id: $bid, name: "卡", type: "debit", balance: 100000}')
 api_request "POST" "/api/v1/wallets" "$bw"
 w_id=$(echo "$HTTP_BODY" | jq -r '.data.id')
-bc1=$(jq -n -c --arg bid "$book_id" '{book_id: $bid, name: "餐饮", type: "expense"}')
-api_request "POST" "/api/v1/categories" "$bc1"
-cat1=$(echo "$HTTP_BODY" | jq -r '.data.id')
-bc2=$(jq -n -c --arg bid "$book_id" '{book_id: $bid, name: "交通", type: "expense"}')
-api_request "POST" "/api/v1/categories" "$bc2"
-cat2=$(echo "$HTTP_BODY" | jq -r '.data.id')
+api_request "GET" "/api/v1/categories?book_id=${book_id}&type=expense"
+cat1=$(echo "$HTTP_BODY" | jq -r '.data[]? | select(.name=="餐饮" and (.parent_id == null or .parent_id == "")) | .id' | head -n 1)
+if [[ -z "$cat1" || "$cat1" == "null" ]]; then
+  bc1=$(jq -n -c --arg bid "$book_id" '{book_id: $bid, name: "餐饮", type: "expense"}')
+  api_request "POST" "/api/v1/categories" "$bc1"
+  cat1=$(echo "$HTTP_BODY" | jq -r '.data.id')
+fi
+cat2=$(echo "$HTTP_BODY" | jq -r '.data[]? | select(.name=="交通" and (.parent_id == null or .parent_id == "")) | .id' | head -n 1)
+if [[ -z "$cat2" || "$cat2" == "null" ]]; then
+  bc2=$(jq -n -c --arg bid "$book_id" '{book_id: $bid, name: "交通", type: "expense"}')
+  api_request "POST" "/api/v1/categories" "$bc2"
+  cat2=$(echo "$HTTP_BODY" | jq -r '.data.id')
+fi
 
 btx1=$(jq -n -c --arg bid "$book_id" --arg wid "$w_id" --arg cid "$cat1" '{book_id: $bid, wallet_id: $wid, category_id: $cid, type: "expense", amount: 6000, date: "2026-09-04"}')
 api_request "POST" "/api/v1/transactions" "$btx1"
