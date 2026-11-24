@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -187,6 +188,36 @@ func (h *BookHandler) DeleteBook(w http.ResponseWriter, r *http.Request, bookID 
 	sendJSON(w, 0, http.StatusOK, "success", nil)
 }
 
+func (h *BookHandler) SetDefaultBook(w http.ResponseWriter, r *http.Request, bookID string) {
+	uCtx := GetUserContext(r)
+	book, err := h.bookRepo.GetBook(r.Context(), bookID, uCtx.ID)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			sendError(w, http.StatusNotFound, "book not found")
+			return
+		}
+		sendError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := h.userRepo.SetDefaultBook(r.Context(), uCtx.ID, book.ID); err != nil {
+		sendError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	book.IsDefault = true
+	sendJSON(w, 0, http.StatusOK, "success", book)
+}
+
+func (h *BookHandler) ClearDefaultBook(w http.ResponseWriter, r *http.Request) {
+	uCtx := GetUserContext(r)
+	if err := h.userRepo.SetDefaultBook(r.Context(), uCtx.ID, ""); err != nil {
+		sendError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	sendJSON(w, 0, http.StatusOK, "success", map[string]interface{}{
+		"default_book_id": "",
+	})
+}
+
 func (h *BookHandler) ListMembers(w http.ResponseWriter, r *http.Request, bookID string) {
 	uCtx := GetUserContext(r)
 	members, err := h.bookRepo.ListMembersForUser(r.Context(), bookID, uCtx.ID)
@@ -316,9 +347,15 @@ func (h *BookHandler) InviteByEmail(w http.ResponseWriter, r *http.Request, book
 		return
 	}
 
+	singleUseCode, err := h.bookRepo.IssueInviteCode(r.Context(), bookID, uCtx.ID, req.Role, false)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	smtpSent := false
 	if h.authSvc != nil {
-		sent, err := h.authSvc.SendBookInviteEmail(r.Context(), email, uCtx.Name, book.Name, book.InviteCode)
+		sent, err := h.authSvc.SendBookInviteEmail(r.Context(), email, uCtx.Name, book.Name, singleUseCode)
 		if err == nil {
 			smtpSent = sent
 		}
@@ -326,8 +363,43 @@ func (h *BookHandler) InviteByEmail(w http.ResponseWriter, r *http.Request, book
 
 	sendJSON(w, 0, http.StatusCreated, "success", map[string]interface{}{
 		"member":      member,
-		"invite_code": book.InviteCode,
+		"invite_code": singleUseCode,
 		"smtp_sent":   smtpSent,
+		"single_use":  true,
+	})
+}
+
+func (h *BookHandler) RegenerateInviteCode(w http.ResponseWriter, r *http.Request, bookID string) {
+	uCtx := GetUserContext(r)
+	role, err := h.bookRepo.GetMemberRole(r.Context(), bookID, uCtx.ID)
+	if err != nil || role != "owner" {
+		sendError(w, http.StatusForbidden, "only owner can regenerate invite code")
+		return
+	}
+
+	var req struct {
+		Role string `json:"role"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	targetRole := strings.TrimSpace(req.Role)
+	if targetRole != "editor" && targetRole != "viewer" {
+		targetRole = "editor"
+	}
+
+	code, err := h.bookRepo.IssueInviteCode(r.Context(), bookID, uCtx.ID, targetRole, true)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			sendError(w, http.StatusNotFound, "book not found")
+			return
+		}
+		sendError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	sendJSON(w, 0, http.StatusOK, "success", map[string]interface{}{
+		"invite_code": code,
+		"role":        targetRole,
+		"single_use":  true,
 	})
 }
 
@@ -397,37 +469,29 @@ func (h *BookHandler) JoinByCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	book, err := h.bookRepo.GetBookByInviteCode(r.Context(), code)
+	fullBook, joinedNewly, err := h.bookRepo.ConsumeInviteCodeAndJoin(r.Context(), code, uCtx.ID, uCtx.Name)
 	if err != nil {
-		sendError(w, http.StatusNotFound, "invalid invite code")
+		switch {
+		case errors.Is(err, repository.ErrInviteCodeUsed):
+			sendError(w, http.StatusGone, "该邀请码已被使用或已失效，请向账本管理员重新获取")
+		case errors.Is(err, repository.ErrInviteCodeExpired):
+			sendError(w, http.StatusGone, "该邀请码已过期，请向账本管理员重新获取")
+		case errors.Is(err, repository.ErrNotFound):
+			sendError(w, http.StatusNotFound, "邀请码无效，请核对后再试")
+		default:
+			sendError(w, http.StatusInternalServerError, err.Error())
+		}
 		return
 	}
 
-	if _, roleErr := h.bookRepo.GetMemberRole(r.Context(), book.ID, uCtx.ID); roleErr != nil {
-		member := &model.BookMember{
-			BookID:   book.ID,
-			UserID:   uCtx.ID,
-			UserName: uCtx.Name,
-			Role:     "editor",
-			Status:   "active",
-		}
-		if err := h.bookRepo.AddMember(r.Context(), member); err != nil && err != repository.ErrConflict {
-			sendError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
+	if joinedNewly {
 		recordActivity(r.Context(), h.recorder, h.hub, model.BookActivity{
-			BookID:    book.ID,
+			BookID:    fullBook.ID,
 			UserID:    uCtx.ID,
 			ActorName: uCtx.Name,
 			Action:    model.ActivityMemberJoined,
-			Summary:   "通过邀请码加入了账本",
+			Summary:   "通过一次性邀请码加入了账本",
 		}, service.ChangeMember)
-	}
-
-	fullBook, err := h.bookRepo.GetBook(r.Context(), book.ID, uCtx.ID)
-	if err != nil {
-		sendError(w, http.StatusInternalServerError, err.Error())
-		return
 	}
 	sendJSON(w, 0, http.StatusOK, "success", fullBook)
 }

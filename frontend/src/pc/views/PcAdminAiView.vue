@@ -30,6 +30,10 @@ const form = reactive({
   apiKeyInput: '',
   hasApiKey: false,
   model: 'deepseek-chat',
+  sttBaseUrl: '',
+  sttApiKeyInput: '',
+  hasSttApiKey: false,
+  sttModel: 'whisper-1',
   dailyLimit: 30,
   ocrEnabled: true,
   insightsEnabled: true,
@@ -74,6 +78,10 @@ async function loadAiConfig() {
     form.hasApiKey = cfg.hasApiKey;
     form.apiKeyInput = '';
     form.model = cfg.model;
+    form.sttBaseUrl = cfg.sttBaseUrl;
+    form.hasSttApiKey = cfg.hasSttApiKey;
+    form.sttApiKeyInput = '';
+    form.sttModel = cfg.sttModel || 'whisper-1';
     form.dailyLimit = cfg.dailyLimit;
     form.ocrEnabled = cfg.ocrEnabled;
     form.insightsEnabled = cfg.insightsEnabled;
@@ -113,6 +121,8 @@ async function handleSaveConfig() {
       provider: form.provider,
       base_url: form.baseUrl.trim(),
       model: form.model.trim(),
+      stt_base_url: form.sttBaseUrl.trim(),
+      stt_model: form.sttModel.trim() || 'whisper-1',
       daily_limit: Math.max(1, Number(form.dailyLimit) || 30),
       ocr_enabled: form.ocrEnabled,
       insights_enabled: form.insightsEnabled,
@@ -121,11 +131,16 @@ async function handleSaveConfig() {
     if (form.apiKeyInput.trim()) {
       payload.api_key = form.apiKeyInput.trim();
     }
+    if (form.sttApiKeyInput.trim()) {
+      payload.stt_api_key = form.sttApiKeyInput.trim();
+    }
 
     const updated = await api.updateAdminAiConfig(payload as Partial<AdminAiConfig>);
     const cfg = normalizeAiConfig(updated);
     form.hasApiKey = cfg.hasApiKey || Boolean(form.apiKeyInput.trim());
     form.apiKeyInput = '';
+    form.hasSttApiKey = cfg.hasSttApiKey || Boolean(form.sttApiKeyInput.trim());
+    form.sttApiKeyInput = '';
     store.showToast('AI 模型配置已保存', 'success');
   } catch (err: any) {
     store.showToast(err?.message || '保存 AI 配置失败', 'error');
@@ -259,6 +274,59 @@ async function handleSaveUserLimit() {
               min="1"
               max="9999"
               class="w-full h-9 font-bold tabular-nums bg-[#F4F5F8] border border-[#EAECEF] rounded-xl px-3 outline-none focus:border-[#DE8A1E] focus:bg-white"
+            />
+          </div>
+        </div>
+
+        <!-- 语音转写（STT / Whisper）配置 -->
+        <div class="p-3.5 rounded-2xl bg-[#FAFBFD] border border-[#EAECEF] space-y-2.5">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p class="font-bold text-[#18181B]">语音转文字服务（Whisper / SenseVoice）</p>
+              <p class="text-[10px] text-[#64748B] mt-0.5">
+                支持移动端 WebView 真实录音转写。留空地址与密钥时，若上方为 OpenAI / 硅基流动 / Groq 等兼容接口将自动复用。
+              </p>
+            </div>
+            <span
+              class="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+              :class="
+                form.hasSttApiKey
+                  ? 'bg-[#ECF6F0] text-[#2B7A52]'
+                  : 'bg-white border border-[#E6E9EF] text-[#64748B]'
+              "
+            >
+              {{ form.hasSttApiKey ? '已配置独立语音密钥' : '可选配置' }}
+            </span>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            <div class="sm:col-span-2">
+              <label class="block text-[10px] font-semibold text-[#475569] mb-1">语音 API Base URL（选填）</label>
+              <input
+                v-model="form.sttBaseUrl"
+                type="url"
+                placeholder="如：https://api.siliconflow.cn/v1（留空复用上方地址）"
+                class="w-full h-8 text-xs bg-white border border-[#EAECEF] rounded-xl px-3 outline-none focus:border-[#DE8A1E]"
+              />
+            </div>
+            <div>
+              <label class="block text-[10px] font-semibold text-[#475569] mb-1">语音模型</label>
+              <input
+                v-model="form.sttModel"
+                type="text"
+                placeholder="whisper-1 / FunAudioLLM/SenseVoiceSmall"
+                class="w-full h-8 text-xs bg-white border border-[#EAECEF] rounded-xl px-3 outline-none focus:border-[#DE8A1E]"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-[10px] font-semibold text-[#475569] mb-1">语音 API Key（选填）</label>
+            <input
+              v-model="form.sttApiKeyInput"
+              :type="apiKeyVisible ? 'text' : 'password'"
+              :placeholder="form.hasSttApiKey ? '••••••••••••••••（留空不修改）' : '留空则复用上方主 API Key'"
+              class="w-full h-8 font-mono text-xs bg-white border border-[#EAECEF] rounded-xl px-3 outline-none focus:border-[#DE8A1E]"
             />
           </div>
         </div>

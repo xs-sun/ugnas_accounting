@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { ref, computed, watch, nextTick } from 'vue';
 import { formatMoney } from '@/utils/format';
 
 export interface TrendBarItem {
@@ -30,6 +30,21 @@ const props = withDefaults(
 const emit = defineEmits<{
   select: [item: TrendBarItem];
 }>();
+
+const scrollContainerRef = ref<HTMLElement | null>(null);
+const shouldScrollMobile = computed(() => props.mode === 'mobile' && props.items.length > 12);
+
+watch(
+  () => props.items.length,
+  async () => {
+    if (!shouldScrollMobile.value) return;
+    await nextTick();
+    if (scrollContainerRef.value) {
+      scrollContainerRef.value.scrollLeft = scrollContainerRef.value.scrollWidth;
+    }
+  },
+  { immediate: true }
+);
 
 const maxVal = computed(() => {
   const max = Math.max(0, ...props.items.map((it) => it.value || 0));
@@ -75,19 +90,29 @@ function getPcBarStyle(item: TrendBarItem) {
 
 <template>
   <div
-    class="flex items-end justify-between pt-4"
-    :class="[
-      containerHeightClass,
-      mode === 'pc' ? 'gap-2' : 'gap-1.5 px-1',
-    ]"
+    ref="scrollContainerRef"
+    class="w-full min-w-0"
+    :class="shouldScrollMobile ? 'overflow-x-auto phone-scroll' : 'overflow-hidden'"
   >
-    <button
-      v-for="item in items"
-      :key="item.key"
-      type="button"
-      class="flex-1 h-full flex flex-col items-center justify-end gap-1.5 group focus:outline-none"
-      @click="emit('select', item)"
+    <div
+      class="flex items-end pt-4"
+      :class="[
+        containerHeightClass,
+        mode === 'pc'
+          ? 'justify-between gap-2'
+          : shouldScrollMobile
+            ? 'w-max min-w-full justify-start gap-1.5 px-1'
+            : 'w-full justify-between gap-1.5 px-1',
+      ]"
     >
+      <button
+        v-for="item in items"
+        :key="item.key"
+        type="button"
+        class="h-full flex flex-col items-center justify-end gap-1.5 group focus:outline-none"
+        :class="shouldScrollMobile ? 'w-[22px] shrink-0' : 'flex-1 min-w-0'"
+        @click="emit('select', item)"
+      >
       <span
         v-if="mode === 'pc'"
         class="text-[10px] tabular-nums transition-colors leading-none"
@@ -116,7 +141,7 @@ function getPcBarStyle(item: TrendBarItem) {
       />
 
       <span
-        class="tabular-nums leading-none"
+        class="tabular-nums leading-none whitespace-nowrap"
         :class="[
           mode === 'pc' ? 'text-[10px]' : 'text-[9px]',
           selectedKey === item.key
@@ -129,5 +154,6 @@ function getPcBarStyle(item: TrendBarItem) {
         {{ item.label }}
       </span>
     </button>
+    </div>
   </div>
 </template>

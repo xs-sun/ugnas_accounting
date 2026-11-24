@@ -40,8 +40,12 @@ func buildUserProfile(ctx context.Context, u *model.User, bookRepo *repository.B
 	books, _ := bookRepo.ListBooks(ctx, u.ID)
 	var createdCount, joinedCount int
 	var bookIDs []string
+	defaultBookID := ""
 	for _, b := range books {
 		bookIDs = append(bookIDs, b.ID)
+		if u.DefaultBookID != "" && b.ID == u.DefaultBookID {
+			defaultBookID = b.ID
+		}
 		if b.OwnerID == u.ID || b.Role == "owner" {
 			createdCount++
 		} else {
@@ -77,6 +81,7 @@ func buildUserProfile(ctx context.Context, u *model.User, bookRepo *repository.B
 		Role:                   u.Role,
 		EmailBound:             u.EmailBound,
 		GatewayBound:           strings.TrimSpace(u.GatewayUID) != "",
+		DefaultBookID:          defaultBookID,
 		DailyAiLimit:           u.DailyAiLimit,
 		TodayAiCount:           todayAi,
 		StreakDays:             streakDays,
@@ -150,16 +155,24 @@ func (h *AuthHandler) GatewayLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		if existing.EmailBound && strings.TrimSpace(existing.PasswordHash) != "" {
 			h.userRepo.TouchLastActive(r.Context(), existing.ID)
-			token, err := h.authSvc.IssueToken(existing.ID, existing.Role, 30*24*time.Hour)
+			token, err := h.authSvc.IssueToken(existing.ID, existing.Role, service.DefaultAccessTokenTTL)
+			if err != nil {
+				sendError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			refreshToken, err := h.authSvc.IssueRefreshToken(r.Context(), existing.ID, service.DefaultRefreshTokenTTL)
 			if err != nil {
 				sendError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 			profile := buildUserProfile(r.Context(), existing, h.bookRepo, h.walletRepo, h.userRepo, h.settingsRepo)
 			sendJSON(w, 0, http.StatusOK, "success", map[string]interface{}{
-				"status": "authenticated",
-				"token":  token,
-				"user":   profile,
+				"status":             "authenticated",
+				"token":              token,
+				"refresh_token":      refreshToken,
+				"expires_in":         int64(service.DefaultAccessTokenTTL.Seconds()),
+				"refresh_expires_in": int64(service.DefaultRefreshTokenTTL.Seconds()),
+				"user":               profile,
 			})
 			return
 		}
@@ -403,7 +416,12 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 	userRole = createdUser.Role
 
-	token, err := h.authSvc.IssueToken(createdUser.ID, userRole, 30*24*time.Hour)
+	token, err := h.authSvc.IssueToken(createdUser.ID, userRole, service.DefaultAccessTokenTTL)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	refreshToken, err := h.authSvc.IssueRefreshToken(r.Context(), createdUser.ID, service.DefaultRefreshTokenTTL)
 	if err != nil {
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -412,8 +430,11 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	profile := buildUserProfile(r.Context(), createdUser, h.bookRepo, h.walletRepo, h.userRepo, h.settingsRepo)
 
 	sendJSON(w, 0, http.StatusCreated, "success", map[string]interface{}{
-		"token": token,
-		"user":  profile,
+		"token":              token,
+		"refresh_token":      refreshToken,
+		"expires_in":         int64(service.DefaultAccessTokenTTL.Seconds()),
+		"refresh_expires_in": int64(service.DefaultRefreshTokenTTL.Seconds()),
+		"user":               profile,
 	})
 }
 
@@ -478,7 +499,12 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.userRepo.TouchLastActive(r.Context(), user.ID)
-	token, err := h.authSvc.IssueToken(user.ID, user.Role, 30*24*time.Hour)
+	token, err := h.authSvc.IssueToken(user.ID, user.Role, service.DefaultAccessTokenTTL)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	refreshToken, err := h.authSvc.IssueRefreshToken(r.Context(), user.ID, service.DefaultRefreshTokenTTL)
 	if err != nil {
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -486,8 +512,98 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	profile := buildUserProfile(r.Context(), user, h.bookRepo, h.walletRepo, h.userRepo, h.settingsRepo)
 	sendJSON(w, 0, http.StatusOK, "success", map[string]interface{}{
-		"token": token,
-		"user":  profile,
+		"token":              token,
+		"refresh_token":      refreshToken,
+		"expires_in":         int64(service.DefaultAccessTokenTTL.Seconds()),
+		"refresh_expires_in": int64(service.DefaultRefreshTokenTTL.Seconds()),
+		"user":               profile,
+	})
+}
+
+// RefreshToken 使用长期 Refresh Token（180 天，滑动续期）无感换取新的 Access Token；
+// 同时兼容携带尚未过期的旧 cat7_ Access Token 补领 180 天 Refresh Token，确保老版本升级无缝衔接。
+func (h *AuthHandler) RefreshToken(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	rawRefresh := strings.TrimSpace(req.RefreshToken)
+	if rawRefresh != "" {
+		user, newAccess, sameRefresh, err := h.authSvc.RefreshWithToken(
+			r.Context(),
+			rawRefresh,
+			service.DefaultAccessTokenTTL,
+			service.DefaultRefreshTokenTTL,
+		)
+		if err != nil {
+			if strings.Contains(err.Error(), "disabled") {
+				sendError(w, http.StatusForbidden, "account disabled")
+				return
+			}
+			sendError(w, http.StatusUnauthorized, "invalid or expired refresh token")
+			return
+		}
+		h.userRepo.TouchLastActive(r.Context(), user.ID)
+		profile := buildUserProfile(r.Context(), user, h.bookRepo, h.walletRepo, h.userRepo, h.settingsRepo)
+		sendJSON(w, 0, http.StatusOK, "success", map[string]interface{}{
+			"token":              newAccess,
+			"refresh_token":      sameRefresh,
+			"expires_in":         int64(service.DefaultAccessTokenTTL.Seconds()),
+			"refresh_expires_in": int64(service.DefaultRefreshTokenTTL.Seconds()),
+			"user":               profile,
+		})
+		return
+	}
+
+	// 兼容老版本升级：如果客户端还没有 refresh_token，但带着未过期的 cat7_ token，为其补发 180 天 refresh_token
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(authHeader, "Bearer ") || strings.HasPrefix(authHeader, "cat7_") {
+		claims, err := h.authSvc.VerifyToken(authHeader)
+		if err == nil && claims != nil {
+			user, uErr := h.userRepo.GetUserByID(r.Context(), claims.UserID)
+			if uErr == nil && user != nil {
+				if !user.IsActive {
+					sendError(w, http.StatusForbidden, "account disabled")
+					return
+				}
+				newAccess, err := h.authSvc.IssueToken(user.ID, user.Role, service.DefaultAccessTokenTTL)
+				if err != nil {
+					sendError(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+				newRefresh, err := h.authSvc.IssueRefreshToken(r.Context(), user.ID, service.DefaultRefreshTokenTTL)
+				if err != nil {
+					sendError(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+				h.userRepo.TouchLastActive(r.Context(), user.ID)
+				profile := buildUserProfile(r.Context(), user, h.bookRepo, h.walletRepo, h.userRepo, h.settingsRepo)
+				sendJSON(w, 0, http.StatusOK, "success", map[string]interface{}{
+					"token":              newAccess,
+					"refresh_token":      newRefresh,
+					"expires_in":         int64(service.DefaultAccessTokenTTL.Seconds()),
+					"refresh_expires_in": int64(service.DefaultRefreshTokenTTL.Seconds()),
+					"user":               profile,
+				})
+				return
+			}
+		}
+	}
+
+	sendError(w, http.StatusUnauthorized, "refresh_token required")
+}
+
+func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if strings.TrimSpace(req.RefreshToken) != "" {
+		_ = h.authSvc.RevokeRefreshToken(r.Context(), req.RefreshToken)
+	}
+	sendJSON(w, 0, http.StatusOK, "success", map[string]interface{}{
+		"logged_out": true,
 	})
 }
 
@@ -532,6 +648,7 @@ func (h *AuthHandler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	_ = h.authSvc.RevokeAllUserRefreshTokens(r.Context(), user.ID)
 
 	sendJSON(w, 0, http.StatusOK, "success", map[string]interface{}{
 		"reset": true,

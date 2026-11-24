@@ -62,6 +62,7 @@ func (r *SettingsRepo) GetAiConfig(ctx context.Context) (*model.AiConfig, error)
 		Provider:        "DeepSeek",
 		BaseURL:         "https://api.deepseek.com/v1",
 		Model:           "deepseek-chat",
+		SttModel:        "whisper-1",
 		DailyLimit:      30,
 		Temperature:     0.3,
 		OcrEnabled:      true,
@@ -72,11 +73,16 @@ func (r *SettingsRepo) GetAiConfig(ctx context.Context) (*model.AiConfig, error)
 		_ = json.Unmarshal([]byte(raw), cfg)
 	}
 	cfg.HasAPIKey = strings.TrimSpace(cfg.APIKey) != ""
+	cfg.HasSttAPIKey = strings.TrimSpace(cfg.SttAPIKey) != ""
+	if strings.TrimSpace(cfg.SttModel) == "" {
+		cfg.SttModel = "whisper-1"
+	}
 	return cfg, nil
 }
 
 func (r *SettingsRepo) SaveAiConfig(ctx context.Context, cfg *model.AiConfig) error {
 	cfg.HasAPIKey = strings.TrimSpace(cfg.APIKey) != ""
+	cfg.HasSttAPIKey = strings.TrimSpace(cfg.SttAPIKey) != ""
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return err

@@ -232,7 +232,8 @@ async function handleSaveBudget() {
             <h3 class="text-sm font-bold text-[#18181B]">编辑流水明细</h3>
             <p class="text-[11px] text-[#64748B] truncate">
               {{ activeCategory?.name || transaction?.category_name || '未分类'
-              }}{{ subCategory ? ` · ${subCategory}` : '' }}
+              }}{{ subCategory ? ` · ${subCategory}` : ''
+              }}{{ transaction?.created_by_name ? ` · 记录人 ${transaction.created_by_name}` : '' }}
             </p>
           </div>
         </div>
@@ -437,7 +438,7 @@ async function handleSaveBudget() {
     <template #footer>
       <div
         v-if="mode === 'transaction' && transaction"
-        class="shrink-0 px-4 pt-3 pb-5 border-t border-[#ECEEF2] bg-[#F8F9FB] grid grid-cols-3 gap-2"
+        class="shrink-0 px-4 py-2.5 border-t border-[#ECEEF2] bg-[#F8F9FB] grid grid-cols-3 gap-2"
       >
         <button
           type="button"

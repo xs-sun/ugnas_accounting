@@ -12,6 +12,8 @@ import (
 var ErrNotFound = errors.New("not found")
 var ErrConflict = errors.New("conflict")
 var ErrForbidden = errors.New("forbidden")
+var ErrInviteCodeUsed = errors.New("invite code already used")
+var ErrInviteCodeExpired = errors.New("invite code expired")
 
 type BookRepo struct {
 	db *DB
@@ -162,14 +164,17 @@ var presetBookCategories = []presetCat{
 
 func (r *BookRepo) generateUniqueInviteCodeTx(ctx context.Context, tx *sql.Tx) string {
 	for i := 0; i < 30; i++ {
-		code := "CAT7-" + randomDigits4()
+		code := randomInviteToken8()
 		var cnt int
-		_ = tx.QueryRowContext(ctx, `SELECT count(*) FROM books WHERE invite_code = ?`, code).Scan(&cnt)
+		_ = tx.QueryRowContext(ctx, `SELECT count(*) FROM book_invite_codes WHERE UPPER(code) = UPPER(?)`, code).Scan(&cnt)
+		if cnt == 0 {
+			_ = tx.QueryRowContext(ctx, `SELECT count(*) FROM books WHERE UPPER(invite_code) = UPPER(?)`, code).Scan(&cnt)
+		}
 		if cnt == 0 {
 			return code
 		}
 	}
-	return "CAT7-" + uuid.NewString()[:4]
+	return "CAT7-" + uuid.NewString()[:8]
 }
 
 func (r *BookRepo) CreateBook(ctx context.Context, book *model.Book, userName string) error {
@@ -198,6 +203,15 @@ func (r *BookRepo) CreateBook(ctx context.Context, book *model.Book, userName st
 	query := `INSERT INTO books (id, name, currency, description, color, budget, invite_code, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 	if _, err := tx.ExecContext(ctx, query, book.ID, book.Name, book.Currency, book.Description, book.Color, book.Budget, book.InviteCode, book.OwnerID); err != nil {
 		return err
+	}
+
+	if book.InviteCode != "" {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO book_invite_codes (code, book_id, role, created_by, expires_at)
+			VALUES (UPPER(?), ?, 'editor', ?, datetime('now', '+30 days'))
+		`, book.InviteCode, book.ID, book.OwnerID); err != nil {
+			return err
+		}
 	}
 
 	ownerAvatar := "/avatars/cat-1.jpg"
@@ -282,6 +296,15 @@ func (r *BookRepo) EnsureDefaultBookForUser(ctx context.Context, userID, userNam
 	return r.CreateBook(ctx, book, userName)
 }
 
+func (r *BookRepo) getUserDefaultBookID(ctx context.Context, userID string) string {
+	if userID == "" {
+		return ""
+	}
+	var defaultBookID string
+	_ = r.db.QueryRowContext(ctx, `SELECT COALESCE(default_book_id, '') FROM users WHERE id = ?`, userID).Scan(&defaultBookID)
+	return defaultBookID
+}
+
 func (r *BookRepo) populateBookExtras(ctx context.Context, b *model.Book, currentUserID string) {
 	_ = r.db.QueryRowContext(ctx, `SELECT count(*) FROM transactions WHERE book_id = ?`, b.ID).Scan(&b.TxCount)
 	members, err := r.ListMembersForUser(ctx, b.ID, currentUserID)
@@ -315,8 +338,157 @@ func (r *BookRepo) GetBook(ctx context.Context, bookID, userID string) (*model.B
 	if b.Role == "" && b.OwnerID == userID {
 		b.Role = "owner"
 	}
+	if b.Role != "owner" {
+		b.InviteCode = ""
+	}
+	defaultBookID := r.getUserDefaultBookID(ctx, userID)
+	b.IsDefault = defaultBookID != "" && b.ID == defaultBookID
 	r.populateBookExtras(ctx, &b, userID)
 	return &b, nil
+}
+
+// IssueInviteCode 生成一条新的一次性邀请码；invalidateExisting 为 true 时同时作废该账本未使用的旧展示码并更新 books.invite_code。
+func (r *BookRepo) IssueInviteCode(ctx context.Context, bookID, createdBy, role string, invalidateExisting bool) (string, error) {
+	if role != "editor" && role != "viewer" {
+		role = "editor"
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM books WHERE id = ?`, bookID).Scan(&exists); err != nil {
+		return "", err
+	}
+	if exists == 0 {
+		return "", ErrNotFound
+	}
+
+	if invalidateExisting {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE book_invite_codes
+			SET used_by = 'revoked', used_at = datetime('now')
+			WHERE book_id = ? AND used_at = ''
+		`, bookID); err != nil {
+			return "", err
+		}
+	}
+
+	code := r.generateUniqueInviteCodeTx(ctx, tx)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO book_invite_codes (code, book_id, role, created_by, expires_at)
+		VALUES (UPPER(?), ?, ?, ?, datetime('now', '+7 days'))
+	`, code, bookID, role, createdBy); err != nil {
+		return "", err
+	}
+
+	if invalidateExisting {
+		if _, err := tx.ExecContext(ctx, `UPDATE books SET invite_code = ?, updated_at = datetime('now') WHERE id = ?`, code, bookID); err != nil {
+			return "", err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return code, nil
+}
+
+// ConsumeInviteCodeAndJoin 原子校验并核销一次性邀请码，确保一个邀请码只能使用一次。
+func (r *BookRepo) ConsumeInviteCodeAndJoin(ctx context.Context, inviteCode, userID, userName string) (*model.Book, bool, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback()
+
+	var (
+		storedCode string
+		bookID     string
+		role       string
+		usedAt     string
+		isExpired  int
+	)
+	err = tx.QueryRowContext(ctx, `
+		SELECT code, book_id, role, COALESCE(used_at, ''), (datetime('now') > expires_at)
+		FROM book_invite_codes
+		WHERE UPPER(code) = UPPER(?)
+		LIMIT 1
+	`, inviteCode).Scan(&storedCode, &bookID, &role, &usedAt, &isExpired)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, ErrNotFound
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if usedAt != "" {
+		return nil, false, ErrInviteCodeUsed
+	}
+	if isExpired != 0 {
+		return nil, false, ErrInviteCodeExpired
+	}
+
+	// 已是该账本成员/拥有者时直接幂等返回，不消耗一次性邀请码
+	var memberCnt int
+	_ = tx.QueryRowContext(ctx, `SELECT count(*) FROM book_members WHERE book_id = ? AND user_id = ?`, bookID, userID).Scan(&memberCnt)
+	if memberCnt == 0 {
+		var ownerID string
+		if err := tx.QueryRowContext(ctx, `SELECT owner_id FROM books WHERE id = ?`, bookID).Scan(&ownerID); err == nil && ownerID == userID {
+			memberCnt = 1
+		}
+	}
+	if memberCnt > 0 {
+		if err := tx.Commit(); err != nil {
+			return nil, false, err
+		}
+		b, err := r.GetBook(ctx, bookID, userID)
+		return b, false, err
+	}
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE book_invite_codes
+		SET used_by = ?, used_at = datetime('now')
+		WHERE code = ? AND used_at = ''
+	`, userID, storedCode)
+	if err != nil {
+		return nil, false, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, false, ErrInviteCodeUsed
+	}
+
+	if role != "editor" && role != "viewer" {
+		role = "editor"
+	}
+	avatar := ""
+	_ = tx.QueryRowContext(ctx, `SELECT COALESCE(avatar, '') FROM users WHERE id = ?`, userID).Scan(&avatar)
+	if avatar == "" {
+		avatar = "/avatars/cat-1.jpg"
+	}
+	if userName == "" {
+		userName = userID
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO book_members (book_id, user_id, user_name, role, avatar, color, is_virtual, status)
+		VALUES (?, ?, ?, ?, ?, '#DE8A1E', 0, 'active')
+	`, bookID, userID, userName, role, avatar); err != nil {
+		return nil, false, err
+	}
+
+	// 若该码是账本当前展示码，核销后同步清空，避免界面继续展示已失效口令
+	_, _ = tx.ExecContext(ctx, `
+		UPDATE books SET invite_code = '', updated_at = datetime('now')
+		WHERE id = ? AND UPPER(invite_code) = UPPER(?)
+	`, bookID, storedCode)
+
+	if err := tx.Commit(); err != nil {
+		return nil, false, err
+	}
+	b, err := r.GetBook(ctx, bookID, userID)
+	return b, true, err
 }
 
 func (r *BookRepo) GetBookByInviteCode(ctx context.Context, inviteCode string) (*model.Book, error) {
@@ -372,7 +544,12 @@ func (r *BookRepo) ListBooks(ctx context.Context, userID string) ([]model.Book, 
 	}
 	rows.Close()
 
+	defaultBookID := r.getUserDefaultBookID(ctx, userID)
 	for i := range books {
+		if books[i].Role != "owner" {
+			books[i].InviteCode = ""
+		}
+		books[i].IsDefault = defaultBookID != "" && books[i].ID == defaultBookID
 		r.populateBookExtras(ctx, &books[i], userID)
 	}
 	return books, nil
@@ -403,6 +580,7 @@ func (r *BookRepo) DeleteBook(ctx context.Context, bookID string) error {
 	if n == 0 {
 		return ErrNotFound
 	}
+	_, _ = r.db.ExecContext(ctx, `UPDATE users SET default_book_id = '' WHERE default_book_id = ?`, bookID)
 	return nil
 }
 
@@ -506,5 +684,6 @@ func (r *BookRepo) RemoveMember(ctx context.Context, bookID, userID string) erro
 	if n == 0 {
 		return ErrNotFound
 	}
+	_, _ = r.db.ExecContext(ctx, `UPDATE users SET default_book_id = '' WHERE id = ? AND default_book_id = ?`, userID, bookID)
 	return nil
 }

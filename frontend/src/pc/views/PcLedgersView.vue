@@ -33,6 +33,7 @@ const editBookForm = reactive({
 const savingEditBook = ref(false);
 const confirmDeleteBook = ref(false);
 const deletingBook = ref(false);
+const settingDefaultId = ref('');
 
 const members = ref<BookMember[]>([]);
 const loadingMembers = ref(false);
@@ -40,6 +41,7 @@ const loadingMembers = ref(false);
 const inviteEmail = ref('');
 const inviteRole = ref<'editor' | 'viewer'>('editor');
 const invitingEmail = ref(false);
+const regeneratingInviteCode = ref(false);
 
 const virtualName = ref('');
 const virtualColor = ref('#3E8E63');
@@ -119,6 +121,24 @@ async function handleSelectBook(book: Book) {
   if (book.id !== store.activeBookId) {
     await store.switchBook(book.id);
     store.showToast(`已切换至「${book.name}」`, 'success');
+  }
+}
+
+async function handleToggleDefaultBook(book: Book) {
+  if (settingDefaultId.value) return;
+  settingDefaultId.value = book.id;
+  try {
+    if (book.is_default) {
+      await store.clearDefaultBook();
+      store.showToast(`已取消「${book.name}」的默认账本设置`, 'info');
+    } else {
+      await store.setDefaultBook(book.id);
+      store.showToast(`已将「${book.name}」设为默认账本，打开应用时自动加载`, 'success');
+    }
+  } catch (err: any) {
+    store.showToast(err?.message || '设置默认账本失败', 'error');
+  } finally {
+    settingDefaultId.value = '';
   }
 }
 
@@ -230,9 +250,25 @@ async function copyInviteCode(code: string) {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(code);
     }
-    store.showToast(`已复制邀请口令：${code}`, 'success');
+    store.showToast(`已复制一次性口令：${code}（仅限使用一次）`, 'success');
   } catch {
-    store.showToast(`邀请口令：${code}`, 'info');
+    store.showToast(`一次性口令：${code}`, 'info');
+  }
+}
+
+async function handleRegenerateInviteCode() {
+  if (!selectedBook.value || regeneratingInviteCode.value) return;
+  regeneratingInviteCode.value = true;
+  try {
+    const res = await api.regenerateInviteCode(selectedBook.value.id, {
+      role: inviteRole.value,
+    });
+    await store.refreshBooks();
+    store.showToast(`已生成新的一次性口令：${res.invite_code}（旧码已作废）`, 'success');
+  } catch (err: any) {
+    store.showToast(err?.message || '生成新口令失败', 'error');
+  } finally {
+    regeneratingInviteCode.value = false;
   }
 }
 
@@ -375,17 +411,19 @@ function getMemberRoleLabel(role: string): string {
 
         <!-- 账本列表 -->
         <div class="space-y-2.5">
-          <button
+          <div
             v-for="book in store.books"
             :key="book.id"
-            type="button"
-            class="w-full p-4 rounded-2xl border text-left transition"
+            role="button"
+            tabindex="0"
+            class="w-full p-4 rounded-2xl border text-left transition cursor-pointer"
             :class="
               selectedBook?.id === book.id
                 ? 'bg-[#FFFBF4] border-[#DE8A1E]'
                 : 'bg-[#FAFBFD] border-[#EAECEF] hover:bg-white'
             "
             @click="handleSelectBook(book)"
+            @keydown.enter.prevent="handleSelectBook(book)"
           >
             <div class="flex items-center justify-between gap-2">
               <div class="flex items-center gap-2 min-w-0">
@@ -395,12 +433,28 @@ function getMemberRoleLabel(role: string): string {
                 />
                 <span class="text-sm font-bold text-[#18181B] truncate">{{ book.name }}</span>
               </div>
-              <span
-                v-if="book.id === store.activeBookId"
-                class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#FFF6E8] text-[#DE8A1E] shrink-0"
-              >
-                当前使用
-              </span>
+              <div class="flex items-center gap-1.5 shrink-0">
+                <span
+                  v-if="book.id === store.activeBookId"
+                  class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#FFF6E8] text-[#DE8A1E]"
+                >
+                  当前使用
+                </span>
+                <button
+                  type="button"
+                  :disabled="Boolean(settingDefaultId)"
+                  class="text-[10px] font-semibold px-2 py-0.5 rounded-full border transition"
+                  :class="
+                    book.is_default
+                      ? 'bg-[#ECF6F0] border-[#BDE2CE] text-[#2B7A52]'
+                      : 'bg-white border-[#E6E9EF] text-[#64748B] hover:border-[#DE8A1E] hover:text-[#DE8A1E]'
+                  "
+                  :title="book.is_default ? '点击取消默认账本' : '设为打开应用时自动加载的默认账本'"
+                  @click.stop="handleToggleDefaultBook(book)"
+                >
+                  {{ settingDefaultId === book.id ? '设置中…' : book.is_default ? '默认账本' : '设为默认' }}
+                </button>
+              </div>
             </div>
 
             <p class="text-[11px] text-[#64748B] mt-1 truncate">
@@ -426,7 +480,7 @@ function getMemberRoleLabel(role: string): string {
                 {{ book.tx_count ?? 0 }} 笔流水
               </span>
             </div>
-          </button>
+          </div>
         </div>
       </div>
 
@@ -434,7 +488,7 @@ function getMemberRoleLabel(role: string): string {
       <form class="pc-card p-5 space-y-3 text-xs" @submit.prevent="handleJoinByCode">
         <div>
           <h3 class="text-sm font-bold text-[#18181B]">通过口令加入他人账本</h3>
-          <p class="text-[11px] text-[#64748B] mt-0.5">输入家人或伙伴分享的 6 位账本邀请口令</p>
+          <p class="text-[11px] text-[#64748B] mt-0.5">输入家人或伙伴分享的一次性邀请口令（一码一用）</p>
         </div>
         <div class="flex gap-2">
           <input
@@ -442,7 +496,7 @@ function getMemberRoleLabel(role: string): string {
             type="text"
             required
             maxlength="24"
-            placeholder="输入邀请口令，如 CAT7-8492"
+            placeholder="输入一次性口令，如 CAT7-XXXXXXXX"
             class="flex-1 min-w-0 h-9 uppercase font-mono bg-[#F4F5F8] border border-[#EAECEF] rounded-xl px-3 outline-none focus:border-[#DE8A1E] focus:bg-white"
           />
           <button
@@ -469,14 +523,52 @@ function getMemberRoleLabel(role: string): string {
               <p class="text-[11px] text-[#64748B]">编辑账本名称、配色标识与月度总预算</p>
             </div>
 
-            <button
-              v-if="selectedBook.invite_code"
-              type="button"
-              class="text-xs font-semibold px-3 py-1.5 rounded-xl bg-[#FFF6E8] hover:bg-[#FBEBD1] text-[#DE8A1E] transition"
-              @click="copyInviteCode(selectedBook.invite_code)"
-            >
-              复制邀请口令：{{ selectedBook.invite_code }}
-            </button>
+            <div class="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                :disabled="Boolean(settingDefaultId)"
+                class="text-xs font-semibold px-3 py-1.5 rounded-xl border transition"
+                :class="
+                  selectedBook.is_default
+                    ? 'bg-[#ECF6F0] border-[#BDE2CE] text-[#2B7A52]'
+                    : 'bg-[#F4F5F8] border-transparent text-[#475569] hover:border-[#DE8A1E] hover:text-[#DE8A1E]'
+                "
+                @click="handleToggleDefaultBook(selectedBook)"
+              >
+                {{
+                  settingDefaultId === selectedBook.id
+                    ? '设置中…'
+                    : selectedBook.is_default
+                      ? '✓ 默认启动账本'
+                      : '设为默认账本'
+                }}
+              </button>
+              <template v-if="isOwnerOfSelected">
+                <button
+                  v-if="selectedBook.invite_code"
+                  type="button"
+                  class="text-xs font-semibold px-3 py-1.5 rounded-xl bg-[#FFF6E8] hover:bg-[#FBEBD1] text-[#DE8A1E] transition font-mono"
+                  title="一次性口令，使用一次后自动失效"
+                  @click="copyInviteCode(selectedBook.invite_code)"
+                >
+                  复制一次性口令：{{ selectedBook.invite_code }}
+                </button>
+                <button
+                  type="button"
+                  :disabled="regeneratingInviteCode"
+                  class="text-xs font-semibold px-3 py-1.5 rounded-xl bg-[#F4F5F8] hover:bg-[#EAECEF] text-[#18181B] disabled:opacity-60 transition"
+                  @click="handleRegenerateInviteCode"
+                >
+                  {{
+                    regeneratingInviteCode
+                      ? '生成中…'
+                      : selectedBook.invite_code
+                        ? '换新一次性口令'
+                        : '生成一次性口令'
+                  }}
+                </button>
+              </template>
+            </div>
           </div>
 
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">

@@ -19,6 +19,7 @@ const emit = defineEmits<{
 
 const store = useAppStore();
 const switchingId = ref('');
+const settingDefaultId = ref('');
 const inviteCode = ref('');
 const joining = ref(false);
 
@@ -42,6 +43,24 @@ async function handleSwitchBook(book: Book) {
     store.showToast(err?.message || '切换账本失败', 'error');
   } finally {
     switchingId.value = '';
+  }
+}
+
+async function handleToggleDefault(book: Book) {
+  if (settingDefaultId.value) return;
+  settingDefaultId.value = book.id;
+  try {
+    if (book.is_default) {
+      await store.clearDefaultBook();
+      store.showToast(`已取消「${book.name}」的默认账本设置`, 'info');
+    } else {
+      await store.setDefaultBook(book.id);
+      store.showToast(`已将「${book.name}」设为默认账本，打开应用将自动加载`, 'success');
+    }
+  } catch (err: any) {
+    store.showToast(err?.message || '设置默认账本失败', 'error');
+  } finally {
+    settingDefaultId.value = '';
   }
 }
 
@@ -127,20 +146,21 @@ function getMemberInitial(member: BookMember): string {
         暂无账本，点击右上角「+ 新建账本」创建一个吧
       </div>
 
-      <button
+      <div
         v-for="book in store.books"
         :key="book.id"
-        type="button"
-        :disabled="Boolean(switchingId)"
-        class="w-full app-card p-3.5 flex items-center justify-between gap-3 text-left transition"
+        role="button"
+        tabindex="0"
+        class="w-full app-card p-3.5 flex items-center justify-between gap-2.5 text-left transition cursor-pointer"
         :class="
           book.id === store.activeBookId
             ? 'ring-2 ring-[#DE8A1E] bg-[#FFFDF9]'
             : 'hover:bg-[#F8F9FB]'
         "
         @click="handleSwitchBook(book)"
+        @keydown.enter.prevent="handleSwitchBook(book)"
       >
-        <div class="flex items-center gap-3 min-w-0">
+        <div class="flex items-center gap-3 min-w-0 flex-1">
           <div
             class="w-10 h-10 rounded-2xl flex items-center justify-center text-white font-bold text-sm shrink-0 shadow-xs"
             :style="{ backgroundColor: book.color || '#DE8A1E' }"
@@ -156,6 +176,12 @@ function getMemberInitial(member: BookMember): string {
                 class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-[#FFF6E8] text-[#DE8A1E] shrink-0"
               >
                 当前
+              </span>
+              <span
+                v-if="book.is_default"
+                class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-[#ECF6F0] text-[#2B7A52] shrink-0"
+              >
+                默认
               </span>
             </div>
 
@@ -194,42 +220,57 @@ function getMemberInitial(member: BookMember): string {
           </div>
         </div>
 
-        <svg
-          v-if="switchingId === book.id"
-          class="w-4 h-4 text-[#DE8A1E] animate-spin shrink-0"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2.2"
-        >
-          <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4" />
-        </svg>
-        <svg
-          v-else
-          class="w-4 h-4 text-[#94A3B8] shrink-0"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2.2"
-        >
-          <path d="M9 18l6-6-6-6" />
-        </svg>
-      </button>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            :disabled="Boolean(settingDefaultId)"
+            class="px-2.5 py-1 rounded-full text-[11px] font-semibold transition border"
+            :class="
+              book.is_default
+                ? 'bg-[#ECF6F0] border-[#BDE2CE] text-[#2B7A52]'
+                : 'bg-white border-[#E6E9EF] text-[#64748B] hover:border-[#DE8A1E] hover:text-[#DE8A1E]'
+            "
+            @click.stop="handleToggleDefault(book)"
+          >
+            {{ settingDefaultId === book.id ? '设置中…' : book.is_default ? '默认账本' : '设为默认' }}
+          </button>
+          <svg
+            v-if="switchingId === book.id"
+            class="w-4 h-4 text-[#DE8A1E] animate-spin shrink-0"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+          >
+            <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4" />
+          </svg>
+          <svg
+            v-else
+            class="w-4 h-4 text-[#94A3B8] shrink-0"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+          >
+            <path d="M9 18l6-6-6-6" />
+          </svg>
+        </div>
+      </div>
     </div>
 
     <!-- 底部通过口令加入共享账本 -->
     <template #footer>
       <div class="p-4 pt-3 pb-6 border-t border-[#ECEEF2] bg-[#F5F6F8] shrink-0">
         <p class="text-[11px] font-medium text-[#64748B] mb-2">
-          通过邀请口令加入家人 / 伙伴的共享账本
+          输入一次性邀请口令加入共享账本（一码一用）
         </p>
         <form class="flex items-center gap-2" @submit.prevent="handleJoinByCode">
           <input
             v-model="inviteCode"
             type="text"
             maxlength="24"
-            placeholder="输入邀请口令，如 CAT7-8492"
-            class="flex-1 min-w-0 text-xs bg-white border border-[#DFE3EA] rounded-xl px-3 py-2.5 outline-none focus:border-[#DE8A1E] transition"
+            placeholder="输入一次性口令，如 CAT7-XXXXXXXX"
+            class="flex-1 min-w-0 text-xs bg-white border border-[#DFE3EA] rounded-xl px-3 py-2.5 outline-none focus:border-[#DE8A1E] transition uppercase font-mono"
           />
           <button
             type="submit"

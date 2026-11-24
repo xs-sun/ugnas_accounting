@@ -193,20 +193,36 @@
   transition: height 0.35s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.2s ease;
 }
 
-/* 底部弹出 Sheet 物理动效 */
+/* 底部弹出 Sheet 物理动效（纯 GPU transform 合成，避免高度过渡导致关闭抖动卡顿） */
+.sheet-root {
+  transition: visibility 0s linear 0s;
+}
+.sheet-root.sheet-hidden {
+  pointer-events: none;
+  visibility: hidden;
+  transition: visibility 0s linear 0.28s;
+}
 .sheet-backdrop {
-  transition: opacity 0.24s ease;
+  transition: opacity 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
   touch-action: none;
   overscroll-behavior: none;
+  will-change: opacity;
 }
 .sheet-panel {
-  transition:
-    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    height 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    max-height 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    border-radius 0.24s ease;
-  will-change: transform, height;
+  transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+  transform: translate3d(0, 0, 0);
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
   overscroll-behavior: contain;
+}
+.sheet-panel.is-detent-animating {
+  transition:
+    transform 0.26s cubic-bezier(0.22, 1, 0.36, 1),
+    height 0.26s cubic-bezier(0.22, 1, 0.36, 1),
+    max-height 0.26s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .sheet-panel .phone-scroll {
   overscroll-behavior: contain;
@@ -214,15 +230,18 @@
 .sheet-panel.is-dragging {
   transition: none !important;
 }
-.sheet-panel.sheet-compact {
+.sheet-panel.sheet-compact:not(.sheet-keyboard-open) {
   height: 44% !important;
   max-height: 44% !important;
 }
-.sheet-panel.sheet-fullscreen {
+.sheet-panel.sheet-fullscreen:not(.sheet-keyboard-open) {
   height: calc(100% - 44px) !important;
   max-height: calc(100% - 44px) !important;
   border-top-left-radius: 24px !important;
   border-top-right-radius: 24px !important;
+}
+.sheet-panel.sheet-keyboard-open {
+  padding-bottom: 0 !important;
 }
 .sheet-drag-handle {
   cursor: grab;
@@ -248,14 +267,11 @@
 .record-swipe-stage.is-swiping {
   transition: none !important;
 }
-.sheet-hidden {
-  pointer-events: none;
-}
 .sheet-hidden .sheet-backdrop {
   opacity: 0;
 }
 .sheet-hidden .sheet-panel {
-  transform: translateY(104%);
+  transform: translate3d(0, 102%, 0);
 }
 
 /* 侧滑抽屉 */

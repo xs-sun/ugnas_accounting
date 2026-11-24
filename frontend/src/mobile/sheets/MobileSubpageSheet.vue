@@ -53,6 +53,7 @@ const ledgerCurrency = ref('CNY');
 const ledgerDesc = ref('');
 const ledgerColor = ref(LEDGER_COLOR_PRESETS[0]);
 const ledgerMemberMode = ref<'personal' | 'shared'>('personal');
+const ledgerIsDefault = ref(false);
 const savingLedger = ref(false);
 const confirmDeleteLedger = ref(false);
 
@@ -75,6 +76,7 @@ function initLedgerForm(mode: 'create' | 'edit') {
     ledgerDesc.value = b.description || '';
     ledgerColor.value = b.color || LEDGER_COLOR_PRESETS[0];
     ledgerMemberMode.value = (b.members?.length || 1) > 1 ? 'shared' : 'personal';
+    ledgerIsDefault.value = Boolean(b.is_default);
   } else {
     ledgerName.value = '';
     ledgerBudgetYuan.value = '3000';
@@ -82,6 +84,7 @@ function initLedgerForm(mode: 'create' | 'edit') {
     ledgerDesc.value = '';
     ledgerColor.value = LEDGER_COLOR_PRESETS[0];
     ledgerMemberMode.value = 'personal';
+    ledgerIsDefault.value = false;
   }
 }
 
@@ -105,13 +108,20 @@ async function submitLedgerForm() {
   savingLedger.value = true;
   try {
     if (ledgerMode.value === 'edit' && store.activeBook) {
-      await api.updateBook(store.activeBook.id, {
+      const targetBookId = store.activeBook.id;
+      const wasDefault = Boolean(store.activeBook.is_default);
+      await api.updateBook(targetBookId, {
         name,
         currency: ledgerCurrency.value,
         description: desc,
         color: ledgerColor.value,
         budget: budgetCents,
       });
+      if (ledgerIsDefault.value && !wasDefault) {
+        await store.setDefaultBook(targetBookId);
+      } else if (!ledgerIsDefault.value && wasDefault) {
+        await store.clearDefaultBook();
+      }
       await Promise.allSettled([store.refreshBooks(), store.refreshBudgets()]);
       store.showToast(`已保存账本「${name}」`, 'success');
     } else {
@@ -122,6 +132,9 @@ async function submitLedgerForm() {
         color: ledgerColor.value,
         budget: budgetCents,
       });
+      if (ledgerIsDefault.value) {
+        await store.setDefaultBook(created.id);
+      }
       await store.refreshBooks();
       await store.switchBook(created.id);
       store.showToast(`已创建并切换至「${created.name}」`, 'success');
@@ -1266,6 +1279,14 @@ function closeSheet() {
                   @click="ledgerColor = c"
                 />
               </div>
+            </div>
+
+            <div class="flex items-center justify-between pt-2.5 border-t border-[#F1F3F6]">
+              <div>
+                <p class="text-xs font-bold text-[#18181B]">设为默认账本</p>
+                <p class="text-[10px] text-[#64748B] mt-0.5">每次打开应用时自动加载该账本</p>
+              </div>
+              <ToggleSwitch v-model="ledgerIsDefault" />
             </div>
           </div>
 
@@ -2527,7 +2548,7 @@ function closeSheet() {
 
     <!-- 定时记账底部固定操作栏 -->
     <template v-if="page === 'recurring'" #footer>
-      <div class="shrink-0 bg-white/95 backdrop-blur-md border-t border-[#ECEEF2] px-4 py-3 pb-5">
+      <div class="shrink-0 bg-white/95 backdrop-blur-md border-t border-[#ECEEF2] px-4 py-2.5">
         <button
           v-if="recurringView === 'list'"
           type="button"

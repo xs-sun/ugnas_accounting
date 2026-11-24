@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { Transaction } from '@/types';
+import { useAppStore } from '@/stores/useAppStore';
+import { resolveAvatarUrl } from '@/constants/avatars';
 import { formatMoney } from '@/utils/format';
 import CategoryBadge from './CategoryBadge.vue';
 
@@ -21,6 +23,17 @@ const props = withDefaults(
 const emit = defineEmits<{
   click: [tx: Transaction];
 }>();
+
+const store = useAppStore();
+
+const creatorInfo = computed(() => {
+  const members = store.activeBook?.members || [];
+  const matched = members.find((m) => m.user_id === props.tx.created_by);
+  const name = props.tx.created_by_name || matched?.user_name || '';
+  const avatar = props.tx.created_by_avatar || matched?.avatar || '';
+  const color = matched?.color || '#DE8A1E';
+  return { name, avatar, color };
+});
 
 const displayTitle = computed(
   () => props.tx.title || props.tx.category_name || props.tx.note || '未命名账单'
@@ -79,9 +92,30 @@ const formattedAmount = computed(() => {
             待报销
           </span>
         </div>
-        <p class="text-[11px] text-[#94A3B8] truncate mt-0.5">
-          {{ subtitleText }}
-        </p>
+        <div class="flex items-center gap-1.5 mt-0.5 min-w-0">
+          <p class="text-[11px] text-[#94A3B8] truncate">
+            {{ subtitleText }}
+          </p>
+          <span
+            v-if="creatorInfo.name"
+            class="inline-flex items-center gap-1 text-[10px] text-[#64748B] bg-[#F5F6F8] px-1.5 py-0.5 rounded-full shrink-0 max-w-[96px]"
+          >
+            <img
+              v-if="creatorInfo.avatar"
+              :src="resolveAvatarUrl(creatorInfo.avatar)"
+              :alt="creatorInfo.name"
+              class="w-3.5 h-3.5 rounded-full object-cover shrink-0"
+            />
+            <span
+              v-else
+              class="w-3.5 h-3.5 rounded-full text-[8px] font-bold text-white flex items-center justify-center shrink-0"
+              :style="{ backgroundColor: creatorInfo.color }"
+            >
+              {{ creatorInfo.name.slice(0, 1).toUpperCase() }}
+            </span>
+            <span class="truncate">{{ creatorInfo.name }}</span>
+          </span>
+        </div>
       </div>
     </div>
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -19,8 +20,9 @@ import (
 )
 
 var (
-	ErrAiDisabled    = errors.New("ai service is disabled")
-	ErrAiLimitExceed = errors.New("daily ai usage limit exceeded")
+	ErrAiDisabled       = errors.New("ai service is disabled")
+	ErrAiLimitExceed    = errors.New("daily ai usage limit exceeded")
+	ErrSttNotConfigured = errors.New("speech-to-text service is not configured")
 )
 
 type AiService struct {
@@ -988,4 +990,257 @@ func maxInt64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// ResolveEffectiveSttConfig 解析当前生效的语音转写（STT / Whisper）服务配置。
+func ResolveEffectiveSttConfig(cfg *model.AiConfig) (baseURL, apiKey, modelName string, configured bool) {
+	if cfg == nil {
+		return "", "", "", false
+	}
+	baseURL = strings.TrimSpace(cfg.SttBaseURL)
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(cfg.BaseURL)
+	}
+	apiKey = strings.TrimSpace(cfg.SttAPIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(cfg.APIKey)
+	}
+	modelName = strings.TrimSpace(cfg.SttModel)
+	if modelName == "" {
+		modelName = "whisper-1"
+	}
+	if baseURL == "" || apiKey == "" || strings.HasPrefix(apiKey, "sk-cat7-") {
+		return baseURL, apiKey, modelName, false
+	}
+	// DeepSeek 官方仅提供文本对话，未配置独立 SttBaseURL 时不误判为支持语音转写
+	if strings.TrimSpace(cfg.SttBaseURL) == "" && strings.Contains(strings.ToLower(baseURL), "api.deepseek.com") {
+		return baseURL, apiKey, modelName, false
+	}
+	return baseURL, apiKey, modelName, true
+}
+
+// GetCapabilities 返回当前实例可用的 AI / 语音 / OCR 能力摘要（面向普通登录用户，不暴露密钥）。
+func (s *AiService) GetCapabilities(ctx context.Context) map[string]interface{} {
+	cfg, err := s.settingsRepo.GetAiConfig(ctx)
+	if err != nil || cfg == nil {
+		return map[string]interface{}{
+			"enabled":          false,
+			"ocr_enabled":      false,
+			"insights_enabled": false,
+			"stt_configured":   false,
+			"stt_model":        "",
+		}
+	}
+	_, _, sttModel, sttOK := ResolveEffectiveSttConfig(cfg)
+	if !cfg.Enabled {
+		sttOK = false
+	}
+	return map[string]interface{}{
+		"enabled":          cfg.Enabled,
+		"ocr_enabled":      cfg.OcrEnabled,
+		"insights_enabled": cfg.InsightsEnabled,
+		"stt_configured":   sttOK,
+		"stt_model":        sttModel,
+	}
+}
+
+// Transcribe 调用 OpenAI 兼容 /audio/transcriptions 接口将真实录音转写为文字。
+func (s *AiService) Transcribe(ctx context.Context, userID string, audioBytes []byte, fileName string) (string, model.AiUsageSummary, error) {
+	cfg, todayCount, limit, err := s.checkAiQuota(ctx, userID)
+	if err != nil {
+		return "", model.AiUsageSummary{TodayCount: todayCount, DailyLimit: limit, Remaining: 0}, err
+	}
+	if len(audioBytes) == 0 {
+		return "", model.AiUsageSummary{TodayCount: todayCount, DailyLimit: limit, Remaining: max(0, limit-todayCount)}, errors.New("未采集到有效音频数据")
+	}
+
+	baseURL, apiKey, modelName, sttOK := ResolveEffectiveSttConfig(cfg)
+	if !sttOK {
+		return "", model.AiUsageSummary{TodayCount: todayCount, DailyLimit: limit, Remaining: max(0, limit-todayCount)}, ErrSttNotConfigured
+	}
+
+	cleanName := strings.TrimSpace(fileName)
+	if cleanName == "" {
+		cleanName = "voice.webm"
+	}
+
+	var bodyBuf bytes.Buffer
+	mw := multipart.NewWriter(&bodyBuf)
+	part, err := mw.CreateFormFile("file", cleanName)
+	if err != nil {
+		return "", model.AiUsageSummary{TodayCount: todayCount, DailyLimit: limit, Remaining: max(0, limit-todayCount)}, err
+	}
+	if _, err := part.Write(audioBytes); err != nil {
+		return "", model.AiUsageSummary{TodayCount: todayCount, DailyLimit: limit, Remaining: max(0, limit-todayCount)}, err
+	}
+	_ = mw.WriteField("model", modelName)
+	_ = mw.WriteField("language", "zh")
+	_ = mw.Close()
+
+	endpoint := strings.TrimRight(baseURL, "/")
+	if !strings.HasSuffix(endpoint, "/audio/transcriptions") && !strings.HasSuffix(endpoint, "/transcriptions") {
+		endpoint += "/audio/transcriptions"
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &bodyBuf)
+	if err != nil {
+		return "", model.AiUsageSummary{TodayCount: todayCount, DailyLimit: limit, Remaining: max(0, limit-todayCount)}, err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 25 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", model.AiUsageSummary{TodayCount: todayCount, DailyLimit: limit, Remaining: max(0, limit-todayCount)}, fmt.Errorf("语音识别服务请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var errPayload struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(respBytes, &errPayload)
+		msg := strings.TrimSpace(errPayload.Error.Message)
+		if msg == "" {
+			msg = strings.TrimSpace(errPayload.Message)
+		}
+		if msg == "" {
+			msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		}
+		return "", model.AiUsageSummary{TodayCount: todayCount, DailyLimit: limit, Remaining: max(0, limit-todayCount)}, fmt.Errorf("语音识别返回失败: %s", msg)
+	}
+
+	var sttRes struct {
+		Text string `json:"text"`
+	}
+	text := ""
+	if err := json.Unmarshal(respBytes, &sttRes); err == nil {
+		text = strings.TrimSpace(sttRes.Text)
+	} else {
+		text = strings.TrimSpace(string(respBytes))
+	}
+	if text == "" {
+		return "", model.AiUsageSummary{TodayCount: todayCount, DailyLimit: limit, Remaining: max(0, limit-todayCount)}, errors.New("未识别出清晰语音内容，请再说一次")
+	}
+
+	_ = s.settingsRepo.RecordAIUsage(ctx, userID, "stt", modelName, int64(len(audioBytes)/320+60), int64(len([]rune(text))*2))
+	newToday := todayCount + 1
+	rem := limit - newToday
+	if rem < 0 {
+		rem = 0
+	}
+	return text, model.AiUsageSummary{
+		TodayCount: newToday,
+		DailyLimit: limit,
+		Remaining:  rem,
+	}, nil
+}
+
+var spokenFillerPrefixRe = regexp.MustCompile(`^(?:[嗯呃啊额唉唔哎]+\s*[，,、。]?\s*)+`)
+var spokenSpaceRe = regexp.MustCompile(`\s+`)
+
+func cleanSpokenAccountingText(raw string) string {
+	s := strings.TrimSpace(raw)
+	s = spokenFillerPrefixRe.ReplaceAllString(s, "")
+	for _, filler := range []string{"那个，", "那个 ", "就是说，", "就是说 ", "然后就是"} {
+		s = strings.ReplaceAll(s, filler, "")
+	}
+	s = spokenSpaceRe.ReplaceAllString(s, " ")
+	return strings.TrimSpace(s)
+}
+
+// PolishVoiceText 使用已配置的大模型对语音转写文本做纠错、去口癖与记账语义润色；若未配置远端大模型则使用本地规则清洗兜底。
+func (s *AiService) PolishVoiceText(ctx context.Context, userID, rawText string) (string, model.AiUsageSummary, error) {
+	cleaned := cleanSpokenAccountingText(rawText)
+	if cleaned == "" {
+		return "", model.AiUsageSummary{}, errors.New("待优化文本不能为空")
+	}
+
+	cfg, todayCount, limit, err := s.checkAiQuota(ctx, userID)
+	if err != nil {
+		return cleaned, model.AiUsageSummary{TodayCount: todayCount, DailyLimit: limit, Remaining: 0}, err
+	}
+
+	rem := limit - todayCount
+	if rem < 0 {
+		rem = 0
+	}
+
+	if cfg == nil || strings.TrimSpace(cfg.APIKey) == "" || strings.TrimSpace(cfg.BaseURL) == "" || strings.HasPrefix(cfg.APIKey, "sk-cat7-") {
+		return cleaned, model.AiUsageSummary{
+			TodayCount: todayCount,
+			DailyLimit: limit,
+			Remaining:  rem,
+		}, nil
+	}
+
+	payload := map[string]interface{}{
+		"model":       cfg.Model,
+		"temperature": 0.1,
+		"messages": []map[string]string{
+			{
+				"role":    "system",
+				"content": "你是中文语音识别文本润色助手，专门服务于个人记账和查账对话。请在不改变数字金额、账户名和原意的前提下：1）纠正明显的同音错别字（如把口语数字整理清晰）；2）去掉无意义语气词和卡顿重复；3）整理为自然通顺的一句话。仅输出润色后的纯文本，不要添加引号或解释。",
+			},
+			{
+				"role":    "user",
+				"content": cleaned,
+			},
+		},
+	}
+	bodyBytes, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(cfg.BaseURL, "/")+"/chat/completions", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return cleaned, model.AiUsageSummary{TodayCount: todayCount, DailyLimit: limit, Remaining: rem}, nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil || resp == nil {
+		return cleaned, model.AiUsageSummary{TodayCount: todayCount, DailyLimit: limit, Remaining: rem}, nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return cleaned, model.AiUsageSummary{TodayCount: todayCount, DailyLimit: limit, Remaining: rem}, nil
+	}
+
+	var apiRes struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int64 `json:"prompt_tokens"`
+			CompletionTokens int64 `json:"completion_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&apiRes); err != nil || len(apiRes.Choices) == 0 {
+		return cleaned, model.AiUsageSummary{TodayCount: todayCount, DailyLimit: limit, Remaining: rem}, nil
+	}
+	polished := strings.TrimSpace(apiRes.Choices[0].Message.Content)
+	polished = strings.Trim(polished, "\"“”'`")
+	polished = strings.TrimSpace(polished)
+	if polished == "" {
+		return cleaned, model.AiUsageSummary{TodayCount: todayCount, DailyLimit: limit, Remaining: rem}, nil
+	}
+
+	_ = s.settingsRepo.RecordAIUsage(ctx, userID, "polish", cfg.Model, apiRes.Usage.PromptTokens, apiRes.Usage.CompletionTokens)
+	newToday := todayCount + 1
+	newRem := limit - newToday
+	if newRem < 0 {
+		newRem = 0
+	}
+	return polished, model.AiUsageSummary{
+		TodayCount: newToday,
+		DailyLimit: limit,
+		Remaining:  newRem,
+	}, nil
 }

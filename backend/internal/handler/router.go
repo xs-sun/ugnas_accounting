@@ -78,8 +78,10 @@ var (
 	reBookMemberItem     = regexp.MustCompile(`^/api/v1/books/([^/]+)/members/([^/]+)$`)
 	reBookMembers        = regexp.MustCompile(`^/api/v1/books/([^/]+)/members$`)
 	reBookInviteEmail    = regexp.MustCompile(`^/api/v1/books/([^/]+)/invite-email$`)
+	reBookInviteCode     = regexp.MustCompile(`^/api/v1/books/([^/]+)/invite-code$`)
 	reBookVirtualMembers = regexp.MustCompile(`^/api/v1/books/([^/]+)/virtual-members$`)
 	reBookActivities     = regexp.MustCompile(`^/api/v1/books/([^/]+)/activities$`)
+	reBookDefault        = regexp.MustCompile(`^/api/v1/books/([^/]+)/default$`)
 	reBookItem           = regexp.MustCompile(`^/api/v1/books/([^/]+)$`)
 
 	reWalletItem   = regexp.MustCompile(`^/api/v1/wallets/([^/]+)$`)
@@ -187,6 +189,22 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if path == "/api/v1/auth/refresh" {
+		if r.Method == http.MethodPost {
+			rt.authH.RefreshToken(w, r)
+		} else {
+			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		}
+		return
+	}
+	if path == "/api/v1/auth/logout" {
+		if r.Method == http.MethodPost {
+			rt.authH.Logout(w, r)
+		} else {
+			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		}
+		return
+	}
 	if path == "/api/v1/auth/forgot-password" {
 		if r.Method == http.MethodPost {
 			rt.authH.ForgotPassword(w, r)
@@ -254,6 +272,15 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if path == "/api/v1/books/default" {
+		if r.Method == http.MethodDelete {
+			rt.bookH.ClearDefaultBook(w, r)
+		} else {
+			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		}
+		return
+	}
+
 	if m := reBookMemberItem.FindStringSubmatch(path); len(m) > 2 {
 		bookID, targetUser := m[1], m[2]
 		if r.Method == http.MethodDelete {
@@ -273,6 +300,15 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if m := reBookInviteCode.FindStringSubmatch(path); len(m) > 1 {
+		if r.Method == http.MethodPost {
+			rt.bookH.RegenerateInviteCode(w, r, m[1])
+		} else {
+			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		}
+		return
+	}
+
 	if m := reBookVirtualMembers.FindStringSubmatch(path); len(m) > 1 {
 		if r.Method == http.MethodPost {
 			rt.bookH.AddVirtualMember(w, r, m[1])
@@ -285,6 +321,15 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if m := reBookActivities.FindStringSubmatch(path); len(m) > 1 {
 		if r.Method == http.MethodGet {
 			rt.activityH.ListActivities(w, r, m[1])
+		} else {
+			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		}
+		return
+	}
+
+	if m := reBookDefault.FindStringSubmatch(path); len(m) > 1 {
+		if r.Method == http.MethodPost {
+			rt.bookH.SetDefaultBook(w, r, m[1])
 		} else {
 			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
 		}
@@ -570,6 +615,30 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if path == "/api/v1/ai/test" {
 		if r.Method == http.MethodPost {
 			rt.aiH.TestConnection(w, r)
+		} else {
+			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		}
+		return
+	}
+	if path == "/api/v1/ai/capabilities" {
+		if r.Method == http.MethodGet {
+			rt.aiH.Capabilities(w, r)
+		} else {
+			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		}
+		return
+	}
+	if path == "/api/v1/ai/transcribe" {
+		if r.Method == http.MethodPost {
+			rt.aiH.Transcribe(w, r)
+		} else {
+			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		}
+		return
+	}
+	if path == "/api/v1/ai/polish" {
+		if r.Method == http.MethodPost {
+			rt.aiH.Polish(w, r)
 		} else {
 			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
 		}

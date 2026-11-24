@@ -198,7 +198,7 @@ async function submitLogin() {
       password: loginMode.value === 'password' ? loginPassword.value : undefined,
       code: loginMode.value === 'code' ? loginCode.value.trim() : undefined,
     });
-    await store.setAuthToken(res.token, res.user);
+    await store.setAuthToken(res.token, res.user, res.refresh_token);
     store.showToast('登录成功，欢迎回来！', 'success');
     emit('success', res);
   } catch (err: any) {
@@ -217,9 +217,13 @@ async function handleGatewayLogin() {
   try {
     const res = await api.gatewayLogin();
     if (res.status === 'authenticated' && res.token && res.user) {
-      await store.setAuthToken(res.token, res.user);
+      await store.setAuthToken(res.token, res.user, res.refresh_token);
       store.showToast('绿联云授权登录成功！', 'success');
-      emit('success', { token: res.token, user: res.user });
+      emit('success', {
+        token: res.token,
+        refresh_token: res.refresh_token,
+        user: res.user,
+      });
       return;
     }
     if (res.status === 'need_register' && res.bind_ticket) {
@@ -275,7 +279,7 @@ async function submitRegister() {
       bind_ticket: gatewayBind.value?.ticket,
     });
     gatewayBind.value = null;
-    await store.setAuthToken(res.token, res.user);
+    await store.setAuthToken(res.token, res.user, res.refresh_token);
     store.showToast(
       isGatewayBind ? '绑定绿联云并注册成功！' : '注册成功，已自动登录！',
       'success'

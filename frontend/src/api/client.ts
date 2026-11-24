@@ -2,6 +2,7 @@ import type {
   Book,
   BookMember,
   InviteEmailResponse,
+  InviteCodeResponse,
   Wallet,
   WalletSummary,
   Category,
@@ -41,6 +42,9 @@ import type {
   AiOcrResponse,
   AiInsightsResponse,
   AiTestResponse,
+  AiCapabilitiesResponse,
+  AiTranscribeResponse,
+  AiPolishResponse,
   AdminOverview,
   AdminAiConfig,
   AdminAiUsageResponse,
@@ -53,6 +57,7 @@ import type {
 import { ensureUGOSDesktopWindowSize } from '@/utils/ugosWindow';
 
 export const AUTH_TOKEN_KEY = 'cat7_auth_token';
+export const REFRESH_TOKEN_KEY = 'cat7_refresh_token';
 const UG_TOKEN_TIMEOUT_MS = 1000;
 
 export class ApiError extends Error {
@@ -135,6 +140,20 @@ export function setStoredAuthToken(token: string | null): void {
     localStorage.setItem(AUTH_TOKEN_KEY, token.trim());
   } else {
     localStorage.removeItem(AUTH_TOKEN_KEY);
+  }
+}
+
+export function getStoredRefreshToken(): string {
+  if (typeof localStorage === 'undefined') return '';
+  return localStorage.getItem(REFRESH_TOKEN_KEY) || '';
+}
+
+export function setStoredRefreshToken(token: string | null): void {
+  if (typeof localStorage === 'undefined') return;
+  if (token && token.trim()) {
+    localStorage.setItem(REFRESH_TOKEN_KEY, token.trim());
+  } else {
+    localStorage.removeItem(REFRESH_TOKEN_KEY);
   }
 }
 
@@ -331,9 +350,67 @@ export async function getGatewayAuthHeaders(): Promise<Record<string, string>> {
   return headers;
 }
 
+let refreshTokenPromise: Promise<{ ok: boolean; authInvalid: boolean }> | null = null;
+
+/**
+ * 使用长期 Refresh Token（或尚未过期的旧 Access Token）静默刷新会话。
+ * 使用单飞锁避免多并发请求同时触发多次刷新；遇到网络波动/5xx 重启瞬间绝不误清本地凭证。
+ */
+export async function refreshAccessToken(): Promise<{ ok: boolean; authInvalid: boolean }> {
+  if (refreshTokenPromise) {
+    return refreshTokenPromise;
+  }
+  refreshTokenPromise = (async () => {
+    const refreshTok = getStoredRefreshToken();
+    const accessTok = getStoredAuthToken();
+    if (!refreshTok && !accessTok) {
+      return { ok: false, authInvalid: true };
+    }
+    try {
+      const headers: Record<string, string> = {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      };
+      if (!refreshTok && accessTok) {
+        headers['Authorization'] = `Bearer ${accessTok}`;
+      }
+      const res = await fetch('/api/v1/auth/refresh', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(refreshTok ? { refresh_token: refreshTok } : {}),
+      });
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          setStoredAuthToken(null);
+          setStoredRefreshToken(null);
+          return { ok: false, authInvalid: true };
+        }
+        return { ok: false, authInvalid: false };
+      }
+      const json = await res.json();
+      const data = json?.data as AuthResponse | undefined;
+      if (data?.token) {
+        setStoredAuthToken(data.token);
+        if (data.refresh_token) {
+          setStoredRefreshToken(data.refresh_token);
+        }
+        return { ok: true, authInvalid: false };
+      }
+      return { ok: false, authInvalid: false };
+    } catch {
+      // 网络断开或应用更新重启瞬间：保留本地凭证，不强制退出
+      return { ok: false, authInvalid: false };
+    } finally {
+      refreshTokenPromise = null;
+    }
+  })();
+  return refreshTokenPromise;
+}
+
 function handleUnauthorizedResponse(url: string, status: number): void {
   if (status === 401 && !url.startsWith('/api/v1/auth/')) {
     setStoredAuthToken(null);
+    setStoredRefreshToken(null);
     clearGatewayAuthCache();
     unauthorizedHandler?.();
   }
@@ -342,7 +419,8 @@ function handleUnauthorizedResponse(url: string, status: number): void {
 async function requestWithHeaders<T>(
   url: string,
   baseHeaders: Record<string, string>,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  allowRefresh = false
 ): Promise<T> {
   const mergedHeaders: Record<string, string> = {
     ...baseHeaders,
@@ -353,6 +431,18 @@ async function requestWithHeaders<T>(
     ...options,
     headers: mergedHeaders,
   });
+
+  if (response.status === 401 && allowRefresh && !url.startsWith('/api/v1/auth/')) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed.ok) {
+      const nextHeaders = await getAuthHeaders();
+      return requestWithHeaders<T>(url, nextHeaders, options, false);
+    }
+    if (!refreshed.authInvalid) {
+      // 刷新遇到 5xx / 网络瞬断时，不清空 token、不踢出登录页
+      throw new ApiError('服务暂不可用，请稍后重试', 503, 503);
+    }
+  }
 
   if (!response.ok) {
     let errorMsg = `HTTP ${response.status}: ${response.statusText}`;
@@ -378,7 +468,7 @@ async function requestWithHeaders<T>(
 
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   const authHeaders = await getAuthHeaders();
-  return requestWithHeaders<T>(url, authHeaders, options);
+  return requestWithHeaders<T>(url, authHeaders, options, true);
 }
 
 function jsonRequest<T>(url: string, method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown): Promise<T> {
@@ -413,6 +503,15 @@ export const api = {
   },
   async login(data: LoginRequest): Promise<AuthResponse> {
     return jsonRequest<AuthResponse>('/api/v1/auth/login', 'POST', data);
+  },
+  async logout(refreshToken?: string): Promise<void> {
+    try {
+      await jsonRequest<{ logged_out: boolean }>('/api/v1/auth/logout', 'POST', {
+        refresh_token: refreshToken || undefined,
+      });
+    } catch {
+      // 忽略登出吊销接口的瞬时网络错误
+    }
   },
   async forgotPassword(data: ForgotPasswordRequest): Promise<ForgotPasswordResponse> {
     return jsonRequest<ForgotPasswordResponse>('/api/v1/auth/forgot-password', 'POST', data);
@@ -460,6 +559,12 @@ export const api = {
   async deleteBook(id: string): Promise<void> {
     return request<void>(`/api/v1/books/${encodeURIComponent(id)}`, { method: 'DELETE' });
   },
+  async setDefaultBook(id: string): Promise<Book> {
+    return jsonRequest<Book>(`/api/v1/books/${encodeURIComponent(id)}/default`, 'POST');
+  },
+  async clearDefaultBook(): Promise<{ default_book_id: string }> {
+    return request<{ default_book_id: string }>('/api/v1/books/default', { method: 'DELETE' });
+  },
   async listMembers(bookId: string): Promise<BookMember[]> {
     return request<BookMember[]>(`/api/v1/books/${encodeURIComponent(bookId)}/members`);
   },
@@ -476,6 +581,16 @@ export const api = {
     data: { email: string; role?: string }
   ): Promise<InviteEmailResponse> {
     return jsonRequest<InviteEmailResponse>(`/api/v1/books/${encodeURIComponent(bookId)}/invite-email`, 'POST', data);
+  },
+  async regenerateInviteCode(
+    bookId: string,
+    data?: { role?: 'editor' | 'viewer' }
+  ): Promise<InviteCodeResponse> {
+    return jsonRequest<InviteCodeResponse>(
+      `/api/v1/books/${encodeURIComponent(bookId)}/invite-code`,
+      'POST',
+      data || {}
+    );
   },
   async createVirtualMember(
     bookId: string,
@@ -700,6 +815,27 @@ export const api = {
     model?: string;
   }): Promise<AiTestResponse> {
     return jsonRequest<AiTestResponse>('/api/v1/ai/test', 'POST', data || {});
+  },
+  async getAiCapabilities(): Promise<AiCapabilitiesResponse> {
+    return request<AiCapabilitiesResponse>('/api/v1/ai/capabilities');
+  },
+  async aiTranscribe(
+    file: Blob,
+    filename = 'voice.webm',
+    opts?: { polish?: boolean }
+  ): Promise<AiTranscribeResponse> {
+    const formData = new FormData();
+    formData.append('file', file, filename);
+    if (opts?.polish) {
+      formData.append('polish', '1');
+    }
+    return request<AiTranscribeResponse>('/api/v1/ai/transcribe', {
+      method: 'POST',
+      body: formData,
+    });
+  },
+  async aiPolish(text: string): Promise<AiPolishResponse> {
+    return jsonRequest<AiPolishResponse>('/api/v1/ai/polish', 'POST', { text });
   },
 
   // ==================== Admin ====================

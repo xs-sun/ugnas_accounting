@@ -57,8 +57,6 @@ const showAuthScreen = computed(
   () => authScreenOpen.value || (store.initialized && store.authRequired)
 );
 
-const activeBookMembers = computed(() => store.activeBook?.members || []);
-
 const anyOverlayOpen = computed(
   () =>
     recordSheetOpen.value ||
@@ -172,7 +170,7 @@ onMounted(() => {
       class="fixed top-0 left-0 right-0 z-20 top-fade-mask pt-safe pb-3 pointer-events-none"
     >
       <header class="px-4 pt-2.5 flex items-center justify-between gap-2 pointer-events-auto">
-        <!-- 左侧：当前账本名 + 成员圆点 + 下拉箭头 -->
+        <!-- 左侧：当前账本名 + 下拉箭头 -->
         <button
           type="button"
           class="glass-top-pill flex items-center gap-2 pl-2.5 pr-3 py-1.5 rounded-full hover:bg-white transition min-w-0 max-w-[66%]"
@@ -184,18 +182,6 @@ onMounted(() => {
           />
           <span class="text-[13px] font-semibold text-[#18181B] truncate">
             {{ store.activeBook?.name || '七猫账本' }}
-          </span>
-          <span
-            v-if="activeBookMembers.length > 1"
-            class="flex items-center -space-x-1 shrink-0"
-            :title="`共 ${activeBookMembers.length} 位成员`"
-          >
-            <span
-              v-for="m in activeBookMembers.slice(0, 3)"
-              :key="m.user_id"
-              class="w-2.5 h-2.5 rounded-full ring-1 ring-white"
-              :style="{ backgroundColor: m.color || '#3E8E63' }"
-            />
           </span>
           <svg
             class="w-3.5 h-3.5 text-[#64748B] shrink-0"
@@ -290,12 +276,8 @@ onMounted(() => {
 
     <!-- 主内容滚动区 -->
     <main
-      class="flex-1 min-h-0 phone-scroll px-4 pb-28 space-y-3.5"
-      :class="
-        anyOverlayOpen
-          ? 'overflow-hidden pointer-events-none touch-none'
-          : 'overflow-y-auto'
-      "
+      class="flex-1 min-h-0 phone-scroll overflow-y-auto overflow-x-hidden px-4 pb-24 space-y-3.5"
+      :class="{ 'pointer-events-none touch-none': anyOverlayOpen }"
       :style="mainPaddingStyle"
     >
       <div
@@ -396,7 +378,7 @@ onMounted(() => {
     <div
       v-if="!store.authRequired"
       class="fixed bottom-0 left-0 right-0 z-20 px-4 pointer-events-none"
-      style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 14px)"
+      style="padding-bottom: max(10px, calc(env(safe-area-inset-bottom, 0px) + 2px))"
     >
       <div class="flex items-center gap-2.5 pointer-events-auto">
         <nav

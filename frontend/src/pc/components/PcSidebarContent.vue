@@ -102,7 +102,7 @@ const ADMIN_NAV_ITEMS: NavItem[] = [
 const bookOptions = computed<DropdownOption[]>(() =>
   store.books.map((b) => ({
     value: b.id,
-    label: b.name,
+    label: b.is_default ? `${b.name}（默认）` : b.name,
     dot: b.color || '#DE8A1E',
   }))
 );

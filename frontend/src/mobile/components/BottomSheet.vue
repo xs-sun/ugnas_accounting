@@ -24,7 +24,7 @@ function releaseBodyLock(): void {
 </script>
 
 <script setup lang="ts">
-import { ref, computed, watch, onBeforeUnmount } from 'vue';
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 
 export type SheetDetent = 'compact' | 'default' | 'fullscreen';
 
@@ -59,10 +59,17 @@ const backdropRef = ref<HTMLElement | null>(null);
 
 const detent = ref<SheetDetent>(props.initialDetent);
 const isDragging = ref(false);
+const isDetentAnimating = ref(false);
 const dragTransform = ref('');
 const dragHeight = ref('');
 const dragMaxHeight = ref('');
 const backdropOpacity = ref<string | undefined>(undefined);
+
+// 软键盘（visualViewport）适配状态：iOS WKWebView 弹键盘时 fixed inset-0 仍按全屏布局，
+// 需要按 visualViewport 实时约束弹窗可视区，并将聚焦的输入框滚入视野。
+const viewportHeight = ref(0);
+const viewportOffsetTop = ref(0);
+const keyboardOpen = ref(false);
 
 let hasLockedBody = false;
 let dragStartY = 0;
@@ -71,6 +78,9 @@ let dragLastDy = 0;
 let dragStartDetent: SheetDetent = 'default';
 let activePointerId: number | null = null;
 let resetTimer: ReturnType<typeof setTimeout> | null = null;
+let detentAnimTimer: ReturnType<typeof setTimeout> | null = null;
+let focusScrollTimer1: ReturnType<typeof setTimeout> | null = null;
+let focusScrollTimer2: ReturnType<typeof setTimeout> | null = null;
 
 function syncBodyLock(opened: boolean) {
   if (opened && !hasLockedBody) {
@@ -89,11 +99,93 @@ function clearInlineStyles() {
   backdropOpacity.value = undefined;
 }
 
+function triggerDetentAnimation() {
+  if (detentAnimTimer) clearTimeout(detentAnimTimer);
+  isDetentAnimating.value = true;
+  detentAnimTimer = setTimeout(() => {
+    isDetentAnimating.value = false;
+    detentAnimTimer = null;
+  }, 280);
+}
+
 function setDetent(next: SheetDetent) {
+  triggerDetentAnimation();
   detent.value = next;
   clearInlineStyles();
   emit('detent-change', next);
 }
+
+function isEditableElement(el: EventTarget | null): el is HTMLElement {
+  if (!(el instanceof HTMLElement)) return false;
+  const tag = el.tagName;
+  if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if (tag === 'INPUT') {
+    const type = (el as HTMLInputElement).type;
+    return !['checkbox', 'radio', 'file', 'button', 'submit', 'range', 'hidden'].includes(type);
+  }
+  return el.isContentEditable;
+}
+
+function updateViewportMetrics() {
+  if (typeof window === 'undefined') return;
+  const vv = window.visualViewport;
+  const layoutH = window.innerHeight || document.documentElement.clientHeight || 0;
+  if (!vv) {
+    viewportHeight.value = 0;
+    viewportOffsetTop.value = 0;
+    keyboardOpen.value = false;
+    return;
+  }
+  const activeEditable = isEditableElement(document.activeElement) && Boolean(panelRef.value?.contains(document.activeElement));
+  const shrunk = layoutH > 0 && vv.height < layoutH - 100;
+  keyboardOpen.value = shrunk || (activeEditable && vv.height < layoutH - 40);
+  if (keyboardOpen.value) {
+    viewportHeight.value = Math.round(vv.height);
+    viewportOffsetTop.value = Math.round(vv.offsetTop);
+  } else {
+    viewportHeight.value = 0;
+    viewportOffsetTop.value = 0;
+  }
+}
+
+function scrollFocusedInputIntoView(target: HTMLElement) {
+  const scrollInto = () => {
+    if (!props.open || !panelRef.value?.contains(target)) return;
+    updateViewportMetrics();
+    try {
+      target.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+    } catch {
+      target.scrollIntoView(true);
+    }
+  };
+  if (focusScrollTimer1) clearTimeout(focusScrollTimer1);
+  if (focusScrollTimer2) clearTimeout(focusScrollTimer2);
+  focusScrollTimer1 = setTimeout(scrollInto, 120);
+  focusScrollTimer2 = setTimeout(scrollInto, 340);
+}
+
+function onPanelFocusIn(e: FocusEvent) {
+  if (!props.open) return;
+  if (isEditableElement(e.target)) {
+    updateViewportMetrics();
+    scrollFocusedInputIntoView(e.target);
+  }
+}
+
+function onPanelFocusOut() {
+  setTimeout(() => {
+    if (!panelRef.value?.contains(document.activeElement)) {
+      updateViewportMetrics();
+    }
+  }, 80);
+}
+
+onMounted(() => {
+  if (typeof window !== 'undefined' && window.visualViewport) {
+    window.visualViewport.addEventListener('resize', updateViewportMetrics);
+    window.visualViewport.addEventListener('scroll', updateViewportMetrics);
+  }
+});
 
 watch(
   () => props.open,
@@ -106,23 +198,34 @@ watch(
     if (val) {
       detent.value = props.initialDetent;
       isDragging.value = false;
+      isDetentAnimating.value = false;
       clearInlineStyles();
+      updateViewportMetrics();
     } else {
+      keyboardOpen.value = false;
+      viewportHeight.value = 0;
+      viewportOffsetTop.value = 0;
+      // 等待关闭位移动画完全结束后再清理状态，避免关闭尾声触发重排抖动
       resetTimer = setTimeout(() => {
         isDragging.value = false;
+        isDetentAnimating.value = false;
         detent.value = props.initialDetent;
         clearInlineStyles();
         resetTimer = null;
-      }, 260);
+      }, 300);
     }
   },
   { immediate: true }
 );
 
 onBeforeUnmount(() => {
-  if (resetTimer) {
-    clearTimeout(resetTimer);
-    resetTimer = null;
+  if (resetTimer) clearTimeout(resetTimer);
+  if (detentAnimTimer) clearTimeout(detentAnimTimer);
+  if (focusScrollTimer1) clearTimeout(focusScrollTimer1);
+  if (focusScrollTimer2) clearTimeout(focusScrollTimer2);
+  if (typeof window !== 'undefined' && window.visualViewport) {
+    window.visualViewport.removeEventListener('resize', updateViewportMetrics);
+    window.visualViewport.removeEventListener('scroll', updateViewportMetrics);
   }
   syncBodyLock(false);
 });
@@ -299,16 +402,33 @@ const panelClass = computed(() => [
   props.maxHeightClass,
   {
     'is-dragging': isDragging.value,
+    'is-detent-animating': isDetentAnimating.value,
     'sheet-compact': detent.value === 'compact',
     'sheet-fullscreen': detent.value === 'fullscreen',
+    'sheet-keyboard-open': keyboardOpen.value,
   },
 ]);
+
+const rootStyle = computed(() => {
+  if (!props.open || !keyboardOpen.value || viewportHeight.value <= 0) {
+    return undefined;
+  }
+  return {
+    top: `${viewportOffsetTop.value}px`,
+    height: `${viewportHeight.value}px`,
+    bottom: 'auto',
+  };
+});
 
 const panelStyle = computed(() => {
   const style: Record<string, string> = {};
   if (dragTransform.value) style.transform = dragTransform.value;
-  if (dragHeight.value) style.height = dragHeight.value;
-  if (dragMaxHeight.value) style.maxHeight = dragMaxHeight.value;
+  if (keyboardOpen.value && viewportHeight.value > 0) {
+    style.maxHeight = `${Math.max(220, viewportHeight.value - 12)}px`;
+  } else {
+    if (dragHeight.value) style.height = dragHeight.value;
+    if (dragMaxHeight.value) style.maxHeight = dragMaxHeight.value;
+  }
   return style;
 });
 
@@ -319,11 +439,12 @@ const backdropStyle = computed(() =>
 
 <template>
   <div
-    class="fixed inset-0 flex flex-col justify-end"
+    class="sheet-root fixed inset-0 flex flex-col justify-end"
     :class="[zIndexClass, { 'sheet-hidden': !open }]"
+    :style="rootStyle"
     :aria-hidden="!open"
   >
-    <!-- 遮罩层：拦截触控滑动与滚轮防止穿透 -->
+    <!-- 遮罩层：保留轻度毛玻璃模糊并通过 GPU 合成层做 opacity 过渡 -->
     <div
       ref="backdropRef"
       class="sheet-backdrop fixed inset-0 bg-[#18211C]/40 backdrop-blur-[2px]"
@@ -340,6 +461,8 @@ const backdropStyle = computed(() =>
       :class="panelClass"
       :style="panelStyle"
       @wheel.stop
+      @focusin="onPanelFocusIn"
+      @focusout="onPanelFocusOut"
     >
       <!-- 顶部可拖拽把手 -->
       <div

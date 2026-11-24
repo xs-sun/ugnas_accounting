@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useAppStore } from '@/stores/useAppStore';
 import { DEFAULT_MASCOT, MASCOT_FALLBACK } from '@/constants/avatars';
 import type { AuthResponse } from '@/types';
@@ -82,7 +82,7 @@ function handleOpenAvatar(currentAvatar: string) {
 async function handleAuthSuccess(auth: AuthResponse) {
   // AuthFormPanel 内部通常会调用 store.setAuthToken，此处按契约做幂等兜底同步
   if (!store.hasAuthToken() || store.user?.user_id !== auth.user.user_id) {
-    await store.setAuthToken(auth.token, auth.user);
+    await store.setAuthToken(auth.token, auth.user, auth.refresh_token);
   }
   emit('success', auth);
   closeScreen();
@@ -94,25 +94,76 @@ function onMascotError(e: Event) {
   img.dataset.fb = '1';
   img.src = MASCOT_FALLBACK;
 }
+
+const scrollContainerRef = ref<HTMLElement | null>(null);
+const viewportStyle = ref<Record<string, string> | undefined>(undefined);
+
+function syncAuthViewport() {
+  if (typeof window === 'undefined' || !props.open) {
+    viewportStyle.value = undefined;
+    return;
+  }
+  const vv = window.visualViewport;
+  const layoutH = window.innerHeight || document.documentElement.clientHeight || 0;
+  if (vv && layoutH > 0 && vv.height < layoutH - 100) {
+    viewportStyle.value = {
+      top: `${Math.round(vv.offsetTop)}px`,
+      height: `${Math.round(vv.height)}px`,
+      bottom: 'auto',
+    };
+  } else {
+    viewportStyle.value = undefined;
+  }
+}
+
+function onAuthFocusIn(e: FocusEvent) {
+  const el = e.target as HTMLElement | null;
+  if (!el || !['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) return;
+  syncAuthViewport();
+  setTimeout(() => {
+    syncAuthViewport();
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, 150);
+  setTimeout(() => {
+    syncAuthViewport();
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, 360);
+}
+
+onMounted(() => {
+  if (typeof window !== 'undefined' && window.visualViewport) {
+    window.visualViewport.addEventListener('resize', syncAuthViewport);
+    window.visualViewport.addEventListener('scroll', syncAuthViewport);
+  }
+});
+
+onBeforeUnmount(() => {
+  if (typeof window !== 'undefined' && window.visualViewport) {
+    window.visualViewport.removeEventListener('resize', syncAuthViewport);
+    window.visualViewport.removeEventListener('scroll', syncAuthViewport);
+  }
+});
 </script>
 
 <template>
   <div
     v-if="open"
     class="fixed inset-0 z-50 bg-[#F5F6F8] flex flex-col overflow-hidden pt-safe pb-safe"
+    :style="viewportStyle"
   >
-    <!-- 顶部导航条 -->
+    <!-- 顶部导航条：主登录态避免与绿联 App 原生左上角返回箭头冲突，子视图显示清晰「返回登录」 -->
     <header class="shrink-0 pt-3 px-4 pb-2 flex items-center justify-between gap-2">
       <button
-        v-if="!required || activeView !== 'login'"
+        v-if="activeView !== 'login'"
         type="button"
-        aria-label="返回"
-        class="w-8 h-8 rounded-full bg-white border border-[#ECEEF2] flex items-center justify-center text-[#475569] hover:text-[#18181B] transition shrink-0"
+        aria-label="返回登录"
+        class="h-8 px-2.5 rounded-full bg-white border border-[#ECEEF2] flex items-center gap-1 text-xs font-semibold text-[#475569] hover:text-[#18181B] transition shrink-0"
         @click="handleBack"
       >
-        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
           <path d="M15 18l-6-6 6-6" />
         </svg>
+        <span>返回登录</span>
       </button>
       <span v-else class="w-8 h-8 shrink-0" />
 
@@ -142,7 +193,11 @@ function onMascotError(e: Event) {
     </header>
 
     <!-- 认证表单主体 -->
-    <div class="flex-1 min-h-0 overflow-y-auto phone-scroll px-5 pt-2 pb-8">
+    <div
+      ref="scrollContainerRef"
+      class="flex-1 min-h-0 overflow-y-auto phone-scroll px-5 pt-2 pb-8"
+      @focusin="onAuthFocusIn"
+    >
       <AuthFormPanel
         :initial-view="activeView"
         layout="mobile"

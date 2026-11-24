@@ -151,3 +151,96 @@ func (h *AiHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 	res := h.aiSvc.TestConnection(r.Context(), req.BaseURL, req.APIKey, req.Model)
 	sendJSON(w, 0, http.StatusOK, "success", res)
 }
+
+func (h *AiHandler) Capabilities(w http.ResponseWriter, r *http.Request) {
+	caps := h.aiSvc.GetCapabilities(r.Context())
+	sendJSON(w, 0, http.StatusOK, "success", caps)
+}
+
+func (h *AiHandler) Transcribe(w http.ResponseWriter, r *http.Request) {
+	uCtx := GetUserContext(r)
+	const maxAudioUpload = 15 * 1024 * 1024
+	r.Body = http.MaxBytesReader(w, r.Body, maxAudioUpload)
+	if err := r.ParseMultipartForm(maxAudioUpload); err != nil {
+		sendError(w, http.StatusBadRequest, "音频文件格式无效或超过 15MB 上限")
+		return
+	}
+
+	f, hdr, err := r.FormFile("file")
+	if err != nil {
+		sendError(w, http.StatusBadRequest, "请上传有效录音文件")
+		return
+	}
+	defer f.Close()
+
+	fileName := "voice.webm"
+	if hdr != nil && strings.TrimSpace(hdr.Filename) != "" {
+		fileName = hdr.Filename
+	}
+	audioBytes, err := io.ReadAll(io.LimitReader(f, maxAudioUpload))
+	if err != nil {
+		sendError(w, http.StatusBadRequest, "读取录音数据失败")
+		return
+	}
+
+	text, usage, err := h.aiSvc.Transcribe(r.Context(), uCtx.ID, audioBytes, fileName)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrAiLimitExceed):
+			sendError(w, http.StatusTooManyRequests, "今日 AI 调用次数已达上限")
+		case errors.Is(err, service.ErrAiDisabled):
+			sendError(w, http.StatusForbidden, "AI 记账服务已关闭")
+		case errors.Is(err, service.ErrSttNotConfigured):
+			sendError(w, http.StatusServiceUnavailable, "尚未配置语音转写服务（STT / Whisper），请在管理后台填写支持音频转写的 API 地址与密钥")
+		default:
+			sendError(w, http.StatusBadRequest, err.Error())
+		}
+		return
+	}
+
+	rawText := text
+	polishFlag := r.FormValue("polish") == "1" || r.URL.Query().Get("polish") == "1"
+	if polishFlag && strings.TrimSpace(text) != "" {
+		if pText, pUsage, pErr := h.aiSvc.PolishVoiceText(r.Context(), uCtx.ID, text); pErr == nil && strings.TrimSpace(pText) != "" {
+			text = pText
+			usage = pUsage
+		}
+	}
+
+	sendJSON(w, 0, http.StatusOK, "success", map[string]interface{}{
+		"text":     text,
+		"raw_text": rawText,
+		"usage":    usage,
+	})
+}
+
+func (h *AiHandler) Polish(w http.ResponseWriter, r *http.Request) {
+	uCtx := GetUserContext(r)
+	var req struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		sendError(w, http.StatusBadRequest, "text cannot be blank")
+		return
+	}
+	polished, usage, err := h.aiSvc.PolishVoiceText(r.Context(), uCtx.ID, req.Text)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrAiLimitExceed):
+			sendError(w, http.StatusTooManyRequests, "今日 AI 调用次数已达上限")
+		case errors.Is(err, service.ErrAiDisabled):
+			sendError(w, http.StatusForbidden, "AI 记账服务已关闭")
+		default:
+			sendError(w, http.StatusBadRequest, err.Error())
+		}
+		return
+	}
+	sendJSON(w, 0, http.StatusOK, "success", map[string]interface{}{
+		"text":  polished,
+		"usage": usage,
+	})
+}

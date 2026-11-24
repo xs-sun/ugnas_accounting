@@ -24,6 +24,13 @@ import (
 	"com.xsguyu.accounting/backend/internal/repository"
 )
 
+const (
+	// DefaultAccessTokenTTL Access Token 有效期 30 天
+	DefaultAccessTokenTTL = 30 * 24 * time.Hour
+	// DefaultRefreshTokenTTL Refresh Token 有效期 180 天（半年），每次刷新滑动续期
+	DefaultRefreshTokenTTL = 180 * 24 * time.Hour
+)
+
 type AuthService struct {
 	userRepo     *repository.UserRepo
 	settingsRepo *repository.SettingsRepo
@@ -166,6 +173,85 @@ func (s *AuthService) VerifyToken(tokenStr string) (*tokenClaims, error) {
 		return nil, errors.New("token expired")
 	}
 	return &claims, nil
+}
+
+func hashRefreshToken(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
+// IssueRefreshToken 生成持久化在 SQLite 中的高熵长期 Refresh Token（默认 180 天）。
+func (s *AuthService) IssueRefreshToken(ctx context.Context, userID string, ttl time.Duration) (string, error) {
+	if s.userRepo == nil || strings.TrimSpace(userID) == "" {
+		return "", errors.New("cannot issue refresh token")
+	}
+	if ttl <= 0 {
+		ttl = DefaultRefreshTokenTTL
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	raw := "cat7r_" + base64.RawURLEncoding.EncodeToString(buf)
+	expiresAt := time.Now().Add(ttl).Unix()
+	if err := s.userRepo.CreateRefreshToken(ctx, userID, hashRefreshToken(raw), expiresAt); err != nil {
+		return "", err
+	}
+	return raw, nil
+}
+
+// RefreshWithToken 校验 Refresh Token 并将有效期滑动顺延 180 天，返回用户与新的 Access Token。
+func (s *AuthService) RefreshWithToken(ctx context.Context, rawRefreshToken string, accessTTL, refreshTTL time.Duration) (*model.User, string, string, error) {
+	raw := strings.TrimSpace(rawRefreshToken)
+	if !strings.HasPrefix(raw, "cat7r_") || s.userRepo == nil {
+		return nil, "", "", errors.New("invalid refresh token")
+	}
+	if accessTTL <= 0 {
+		accessTTL = DefaultAccessTokenTTL
+	}
+	if refreshTTL <= 0 {
+		refreshTTL = DefaultRefreshTokenTTL
+	}
+	rec, err := s.userRepo.GetRefreshTokenByHash(ctx, hashRefreshToken(raw))
+	if err != nil || rec == nil {
+		return nil, "", "", errors.New("refresh token not found")
+	}
+	if rec.RevokedAt > 0 {
+		return nil, "", "", errors.New("refresh token revoked")
+	}
+	if time.Now().Unix() > rec.ExpiresAt {
+		return nil, "", "", errors.New("refresh token expired")
+	}
+	u, err := s.userRepo.GetUserByID(ctx, rec.UserID)
+	if err != nil || u == nil {
+		return nil, "", "", errors.New("user not found")
+	}
+	if !u.IsActive {
+		return nil, "", "", errors.New("account disabled")
+	}
+	accessTok, err := s.IssueToken(u.ID, u.Role, accessTTL)
+	if err != nil {
+		return nil, "", "", err
+	}
+	_ = s.userRepo.ExtendRefreshToken(ctx, rec.ID, time.Now().Add(refreshTTL).Unix())
+	return u, accessTok, raw, nil
+}
+
+// RevokeRefreshToken 吊销单条 Refresh Token（退出登录时调用）。
+func (s *AuthService) RevokeRefreshToken(ctx context.Context, rawRefreshToken string) error {
+	raw := strings.TrimSpace(rawRefreshToken)
+	if raw == "" || s.userRepo == nil {
+		return nil
+	}
+	return s.userRepo.RevokeRefreshTokenByHash(ctx, hashRefreshToken(raw))
+}
+
+// RevokeAllUserRefreshTokens 吊销某用户的全部 Refresh Token（改密或禁用账号时调用）。
+func (s *AuthService) RevokeAllUserRefreshTokens(ctx context.Context, userID string) error {
+	if userID == "" || s.userRepo == nil {
+		return nil
+	}
+	return s.userRepo.RevokeAllUserRefreshTokens(ctx, userID)
 }
 
 // IssueGatewayBindTicket creates a short-lived signed ticket binding a verified UGOS gateway identity.

@@ -74,6 +74,9 @@ func (h *AdminHandler) UpdateAiConfig(w http.ResponseWriter, r *http.Request) {
 		BaseURL         *string  `json:"base_url"`
 		APIKey          *string  `json:"api_key"`
 		Model           *string  `json:"model"`
+		SttBaseURL      *string  `json:"stt_base_url"`
+		SttAPIKey       *string  `json:"stt_api_key"`
+		SttModel        *string  `json:"stt_model"`
 		DailyLimit      *int     `json:"daily_limit"`
 		Temperature     *float64 `json:"temperature"`
 		OcrEnabled      *bool    `json:"ocr_enabled"`
@@ -98,6 +101,15 @@ func (h *AdminHandler) UpdateAiConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Model != nil {
 		cur.Model = strings.TrimSpace(*req.Model)
+	}
+	if req.SttBaseURL != nil {
+		cur.SttBaseURL = strings.TrimSpace(*req.SttBaseURL)
+	}
+	if req.SttAPIKey != nil {
+		cur.SttAPIKey = strings.TrimSpace(*req.SttAPIKey)
+	}
+	if req.SttModel != nil {
+		cur.SttModel = strings.TrimSpace(*req.SttModel)
 	}
 	if req.DailyLimit != nil && *req.DailyLimit > 0 {
 		cur.DailyLimit = *req.DailyLimit
@@ -239,6 +251,9 @@ func (h *AdminHandler) UpdateUser(w http.ResponseWriter, r *http.Request, target
 		}
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if req.IsActive != nil && !*req.IsActive && h.authSvc != nil {
+		_ = h.authSvc.RevokeAllUserRefreshTokens(r.Context(), targetID)
 	}
 
 	users, _ := h.settingsRepo.GetAdminUsers(r.Context(), "")

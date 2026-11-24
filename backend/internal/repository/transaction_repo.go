@@ -111,13 +111,18 @@ func (r *TransactionRepo) GetTransaction(ctx context.Context, txID string) (*mod
 	query := `
 	SELECT t.id, t.book_id, t.type, t.amount, t.date, COALESCE(t.tx_time, ''), t.wallet_id, t.to_wallet_id, t.category_id,
 	       COALESCE(t.title, ''), COALESCE(t.sub_category, ''), COALESCE(t.note, ''), COALESCE(t.order_no, ''),
-	       COALESCE(t.include_budget, 1), COALESCE(t.reimburse, 0), t.created_by, t.created_at, t.updated_at,
+	       COALESCE(t.include_budget, 1), COALESCE(t.reimburse, 0), t.created_by,
+	       COALESCE(NULLIF(bm.user_name, ''), NULLIF(u.name, ''), t.created_by, ''),
+	       COALESCE(NULLIF(u.avatar, ''), NULLIF(bm.avatar, ''), ''),
+	       t.created_at, t.updated_at,
 	       COALESCE(c.name, ''), COALESCE(c.icon, ''), COALESCE(c.color, ''), COALESCE(c.bg_color, ''),
 	       COALESCE(w.name, ''), COALESCE(tw.name, '')
 	FROM transactions t
 	LEFT JOIN categories c ON t.category_id = c.id
 	LEFT JOIN wallets w ON t.wallet_id = w.id
 	LEFT JOIN wallets tw ON t.to_wallet_id = tw.id
+	LEFT JOIN book_members bm ON t.book_id = bm.book_id AND t.created_by = bm.user_id
+	LEFT JOIN users u ON t.created_by = u.id
 	WHERE t.id = ?
 	`
 	var tx model.Transaction
@@ -128,7 +133,8 @@ func (r *TransactionRepo) GetTransaction(ctx context.Context, txID string) (*mod
 	err := r.db.QueryRowContext(ctx, query, txID).Scan(
 		&tx.ID, &tx.BookID, &tx.Type, &tx.Amount, &tx.Date, &tx.TxTime, &tx.WalletID, &toW, &catID,
 		&tx.Title, &tx.SubCategory, &tx.Note, &tx.OrderNo,
-		&incBudgetInt, &reimburseInt, &tx.CreatedBy, &tx.CreatedAt, &tx.UpdatedAt,
+		&incBudgetInt, &reimburseInt, &tx.CreatedBy, &tx.CreatedByName, &tx.CreatedByAvatar,
+		&tx.CreatedAt, &tx.UpdatedAt,
 		&tx.CategoryName, &tx.CategoryIcon, &tx.CategoryColor, &tx.CategoryBgColor,
 		&tx.WalletName, &tx.ToWalletName,
 	)
@@ -226,13 +232,18 @@ func (r *TransactionRepo) ListTransactions(ctx context.Context, bookID string, w
 	query := fmt.Sprintf(`
 	SELECT t.id, t.book_id, t.type, t.amount, t.date, COALESCE(t.tx_time, ''), t.wallet_id, t.to_wallet_id, t.category_id,
 	       COALESCE(t.title, ''), COALESCE(t.sub_category, ''), COALESCE(t.note, ''), COALESCE(t.order_no, ''),
-	       COALESCE(t.include_budget, 1), COALESCE(t.reimburse, 0), t.created_by, t.created_at, t.updated_at,
+	       COALESCE(t.include_budget, 1), COALESCE(t.reimburse, 0), t.created_by,
+	       COALESCE(NULLIF(bm.user_name, ''), NULLIF(u.name, ''), t.created_by, ''),
+	       COALESCE(NULLIF(u.avatar, ''), NULLIF(bm.avatar, ''), ''),
+	       t.created_at, t.updated_at,
 	       COALESCE(c.name, ''), COALESCE(c.icon, ''), COALESCE(c.color, ''), COALESCE(c.bg_color, ''),
 	       COALESCE(w.name, ''), COALESCE(tw.name, '')
 	FROM transactions t
 	LEFT JOIN categories c ON t.category_id = c.id
 	LEFT JOIN wallets w ON t.wallet_id = w.id
 	LEFT JOIN wallets tw ON t.to_wallet_id = tw.id
+	LEFT JOIN book_members bm ON t.book_id = bm.book_id AND t.created_by = bm.user_id
+	LEFT JOIN users u ON t.created_by = u.id
 	WHERE %s
 	ORDER BY t.date DESC, COALESCE(t.tx_time, '') DESC, t.created_at DESC
 	LIMIT ? OFFSET ?
@@ -254,7 +265,8 @@ func (r *TransactionRepo) ListTransactions(ctx context.Context, bookID string, w
 		if err := rows.Scan(
 			&tx.ID, &tx.BookID, &tx.Type, &tx.Amount, &tx.Date, &tx.TxTime, &tx.WalletID, &toW, &catID,
 			&tx.Title, &tx.SubCategory, &tx.Note, &tx.OrderNo,
-			&incBudgetInt, &reimburseInt, &tx.CreatedBy, &tx.CreatedAt, &tx.UpdatedAt,
+			&incBudgetInt, &reimburseInt, &tx.CreatedBy, &tx.CreatedByName, &tx.CreatedByAvatar,
+			&tx.CreatedAt, &tx.UpdatedAt,
 			&tx.CategoryName, &tx.CategoryIcon, &tx.CategoryColor, &tx.CategoryBgColor,
 			&tx.WalletName, &tx.ToWalletName,
 		); err != nil {
@@ -997,13 +1009,18 @@ func (r *TransactionRepo) GetStatsReport(ctx context.Context, bookID, period, tx
 	topQuery := fmt.Sprintf(`
 		SELECT t.id, t.book_id, t.type, t.amount, t.date, COALESCE(t.tx_time, ''), t.wallet_id, t.to_wallet_id, t.category_id,
 		       COALESCE(t.title, ''), COALESCE(t.sub_category, ''), COALESCE(t.note, ''), COALESCE(t.order_no, ''),
-		       COALESCE(t.include_budget, 1), COALESCE(t.reimburse, 0), t.created_by, t.created_at, t.updated_at,
+		       COALESCE(t.include_budget, 1), COALESCE(t.reimburse, 0), t.created_by,
+		       COALESCE(NULLIF(bm.user_name, ''), NULLIF(u.name, ''), t.created_by, ''),
+		       COALESCE(NULLIF(u.avatar, ''), NULLIF(bm.avatar, ''), ''),
+		       t.created_at, t.updated_at,
 		       COALESCE(c.name, ''), COALESCE(c.icon, ''), COALESCE(c.color, ''), COALESCE(c.bg_color, ''),
 		       COALESCE(w.name, ''), COALESCE(tw.name, '')
 		FROM transactions t
 		LEFT JOIN categories c ON t.category_id = c.id
 		LEFT JOIN wallets w ON t.wallet_id = w.id
 		LEFT JOIN wallets tw ON t.to_wallet_id = tw.id
+		LEFT JOIN book_members bm ON t.book_id = bm.book_id AND t.created_by = bm.user_id
+		LEFT JOIN users u ON t.created_by = u.id
 		WHERE %s AND t.type = ?
 		ORDER BY t.amount DESC, t.date DESC
 		LIMIT 10
@@ -1022,7 +1039,8 @@ func (r *TransactionRepo) GetStatsReport(ctx context.Context, bookID, period, tx
 		if err := topRows.Scan(
 			&tx.ID, &tx.BookID, &tx.Type, &tx.Amount, &tx.Date, &tx.TxTime, &tx.WalletID, &toW, &catID,
 			&tx.Title, &tx.SubCategory, &tx.Note, &tx.OrderNo,
-			&incBudgetInt, &reimburseInt, &tx.CreatedBy, &tx.CreatedAt, &tx.UpdatedAt,
+			&incBudgetInt, &reimburseInt, &tx.CreatedBy, &tx.CreatedByName, &tx.CreatedByAvatar,
+			&tx.CreatedAt, &tx.UpdatedAt,
 			&tx.CategoryName, &tx.CategoryIcon, &tx.CategoryColor, &tx.CategoryBgColor,
 			&tx.WalletName, &tx.ToWalletName,
 		); err != nil {

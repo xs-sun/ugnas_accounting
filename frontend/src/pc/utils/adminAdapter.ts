@@ -63,6 +63,10 @@ export interface NormalizedAiConfig {
   apiKey: string;
   hasApiKey: boolean;
   model: string;
+  sttBaseUrl: string;
+  sttApiKey: string;
+  hasSttApiKey: boolean;
+  sttModel: string;
   dailyLimit: number;
   ocrEnabled: boolean;
   insightsEnabled: boolean;
@@ -156,6 +160,10 @@ export function normalizeAiConfig(raw: any): NormalizedAiConfig {
     apiKey: String(raw?.api_key || ''),
     hasApiKey: Boolean(raw?.has_api_key ?? Boolean(raw?.api_key)),
     model: String(raw?.model || 'deepseek-chat'),
+    sttBaseUrl: String(raw?.stt_base_url || ''),
+    sttApiKey: String(raw?.stt_api_key || ''),
+    hasSttApiKey: Boolean(raw?.has_stt_api_key ?? Boolean(raw?.stt_api_key)),
+    sttModel: String(raw?.stt_model || 'whisper-1'),
     dailyLimit: Number(raw?.daily_limit ?? 30),
     ocrEnabled: Boolean(raw?.ocr_enabled ?? true),
     insightsEnabled: Boolean(raw?.insights_enabled ?? true),

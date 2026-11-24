@@ -1164,3 +1164,405 @@ func TestLegacyGatewayUserUpgradePreservesBooks(t *testing.T) {
 		t.Fatalf("expected legacy book preserved after upgrade, got %s", rawBooks)
 	}
 }
+
+func TestSingleUseInviteCodeAndTransactionMemberInfo(t *testing.T) {
+	env := setupTestEnv(t)
+	ownerH := map[string]string{"Ugreen-User-ID": "40001", "Ugreen-User-Name": "owner_one", "Ugreen-User-Type": "admin"}
+	userBH := map[string]string{"Ugreen-User-ID": "40002", "Ugreen-User-Name": "member_two", "Ugreen-User-Type": "users"}
+	userCH := map[string]string{"Ugreen-User-ID": "40003", "Ugreen-User-Name": "outsider_three", "Ugreen-User-Type": "users"}
+
+	// Owner creates a book
+	rr, resp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/books", map[string]interface{}{
+		"name": "安全协作账本",
+	}, ownerH)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create book failed: %d %s", rr.Code, rr.Body.String())
+	}
+	bookData := resp["data"].(map[string]interface{})
+	bookID := bookData["id"].(string)
+	code1 := bookData["invite_code"].(string)
+	if !strings.HasPrefix(code1, "CAT7-") || len(code1) < 13 {
+		t.Fatalf("expected high-entropy invite code, got %q", code1)
+	}
+
+	// User B joins using code1 -> succeeds once
+	rr, joinResp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/books/join", map[string]string{
+		"invite_code": code1,
+	}, userBH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("user B join failed: %d %s", rr.Code, rr.Body.String())
+	}
+	// Non-owner should NOT see invite_code in response
+	if joinedBook := joinResp["data"].(map[string]interface{}); joinedBook["invite_code"] != "" && joinedBook["invite_code"] != nil {
+		t.Fatalf("non-owner should not receive invite_code, got %v", joinedBook["invite_code"])
+	}
+
+	// User C tries to reuse code1 -> MUST fail (410 Gone)
+	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/books/join", map[string]string{
+		"invite_code": code1,
+	}, userCH)
+	if rr.Code != http.StatusGone {
+		t.Fatalf("reusing single-use invite code must return 410, got %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Non-owner cannot regenerate invite code
+	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/books/"+bookID+"/invite-code", map[string]string{
+		"role": "editor",
+	}, userBH)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("non-owner regenerate invite code should return 403, got %d", rr.Code)
+	}
+
+	// Owner generates code2, then immediately regenerates code3 -> code2 must be revoked
+	rr, regenResp2 := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/books/"+bookID+"/invite-code", map[string]string{
+		"role": "viewer",
+	}, ownerH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("regenerate code2 failed: %d %s", rr.Code, rr.Body.String())
+	}
+	code2 := regenResp2["data"].(map[string]interface{})["invite_code"].(string)
+
+	rr, regenResp3 := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/books/"+bookID+"/invite-code", map[string]string{
+		"role": "viewer",
+	}, ownerH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("regenerate code3 failed: %d %s", rr.Code, rr.Body.String())
+	}
+	code3 := regenResp3["data"].(map[string]interface{})["invite_code"].(string)
+	if code2 == code3 {
+		t.Fatalf("expected distinct regenerated invite codes, got %q", code2)
+	}
+
+	// Old unused code2 must be revoked
+	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/books/join", map[string]string{
+		"invite_code": code2,
+	}, userCH)
+	if rr.Code != http.StatusGone {
+		t.Fatalf("revoked invite code2 should return 410, got %d", rr.Code)
+	}
+
+	// User C joins with code3 -> succeeds with viewer role
+	rr, joinResp3 := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/books/join", map[string]string{
+		"invite_code": code3,
+	}, userCH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("user C join with code3 failed: %d %s", rr.Code, rr.Body.String())
+	}
+	if joinResp3["data"].(map[string]interface{})["role"] != "viewer" {
+		t.Fatalf("expected viewer role from code3, got %v", joinResp3["data"].(map[string]interface{})["role"])
+	}
+
+	// Verify transaction list includes created_by_name and created_by_avatar
+	wallets, _ := env.walletRepo.ListWallets(context.Background(), bookID, false)
+	rr, txResp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/transactions", map[string]interface{}{
+		"book_id":   bookID,
+		"wallet_id": wallets[0].ID,
+		"type":      "expense",
+		"amount":    1500,
+		"title":     "奶茶",
+	}, userBH)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create tx by member B failed: %d %s", rr.Code, rr.Body.String())
+	}
+	createdTx := txResp["data"].(map[string]interface{})
+	if createdTx["created_by_name"] != "member_two" {
+		t.Fatalf("expected created_by_name=member_two, got %v", createdTx["created_by_name"])
+	}
+
+	rr, listResp := doJSONReq(t, env.handler, http.MethodGet, "/api/v1/transactions?book_id="+bookID, nil, ownerH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list tx failed: %d", rr.Code)
+	}
+	items := listResp["data"].(map[string]interface{})["items"].([]interface{})
+	if len(items) == 0 || items[0].(map[string]interface{})["created_by_name"] != "member_two" {
+		t.Fatalf("expected listed tx to include created_by_name=member_two, got %v", items)
+	}
+}
+
+func TestRefreshTokenFlowAndRevocation(t *testing.T) {
+	t.Setenv("STRICT_AUTH", "1")
+	env := setupTestEnv(t)
+
+	// Register a new user and verify both access token and 180-day refresh_token are issued
+	_, codeResp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/send-code", map[string]string{
+		"email":   "nasowner@cat7.app",
+		"purpose": "register",
+	}, nil)
+	code := codeResp["data"].(map[string]interface{})["demo_code"].(string)
+
+	rr, regResp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/register", map[string]string{
+		"username": "nasowner",
+		"name":     "NAS主人",
+		"email":    "nasowner@cat7.app",
+		"code":     code,
+		"password": "password123",
+	}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("register failed: %d %s", rr.Code, rr.Body.String())
+	}
+	regData := regResp["data"].(map[string]interface{})
+	access1, _ := regData["token"].(string)
+	refresh1, _ := regData["refresh_token"].(string)
+	if !strings.HasPrefix(access1, "cat7_") || !strings.HasPrefix(refresh1, "cat7r_") {
+		t.Fatalf("expected cat7_ and cat7r_ tokens, got access=%q refresh=%q", access1, refresh1)
+	}
+	if int64(regData["refresh_expires_in"].(float64)) != 180*24*3600 {
+		t.Fatalf("expected 180-day refresh_expires_in, got %v", regData["refresh_expires_in"])
+	}
+
+	// Refresh using refresh_token -> returns valid new access token & sliding refresh token
+	rr, refResp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/refresh", map[string]string{
+		"refresh_token": refresh1,
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("refresh token failed: %d %s", rr.Code, rr.Body.String())
+	}
+	refData := refResp["data"].(map[string]interface{})
+	access2, _ := refData["token"].(string)
+	if !strings.HasPrefix(access2, "cat7_") {
+		t.Fatalf("expected refreshed cat7_ token, got %q", access2)
+	}
+
+	// Verify refreshed access token works for protected endpoint
+	rr, _ = doJSONReq(t, env.handler, http.MethodGet, "/api/v1/user/profile", nil, map[string]string{
+		"Authorization": "Bearer " + access2,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("profile with refreshed token failed: %d", rr.Code)
+	}
+
+	// Logout revokes refresh_token -> subsequent refresh fails with 401
+	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/logout", map[string]string{
+		"refresh_token": refresh1,
+	}, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("logout failed: %d", rr.Code)
+	}
+	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/refresh", map[string]string{
+		"refresh_token": refresh1,
+	}, nil)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 after refresh token revocation, got %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Legacy token upgrade: valid access token without refresh_token can still upgrade to get a refresh_token
+	rr, upgResp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/refresh", map[string]string{}, map[string]string{
+		"Authorization": "Bearer " + access2,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("legacy access token refresh upgrade failed: %d %s", rr.Code, rr.Body.String())
+	}
+	if rt, _ := upgResp["data"].(map[string]interface{})["refresh_token"].(string); !strings.HasPrefix(rt, "cat7r_") {
+		t.Fatalf("expected upgraded refresh_token, got %q", rt)
+	}
+}
+
+func TestDefaultBookPersistenceAndCleanup(t *testing.T) {
+	env := setupTestEnv(t)
+
+	_, codeResp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/send-code", map[string]string{
+		"email":   "defbook@cat7.app",
+		"purpose": "register",
+	}, nil)
+	code := codeResp["data"].(map[string]interface{})["demo_code"].(string)
+
+	rr, regResp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/register", map[string]string{
+		"username": "defuser",
+		"name":     "默认账本用户",
+		"email":    "defbook@cat7.app",
+		"code":     code,
+		"password": "password123",
+	}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("register failed: %d %s", rr.Code, rr.Body.String())
+	}
+	tok := regResp["data"].(map[string]interface{})["token"].(string)
+	hdr := map[string]string{"Authorization": "Bearer " + tok}
+
+	// Create second book
+	rr, book2Resp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/books", map[string]interface{}{
+		"name":   "家庭共同账本",
+		"budget": 800000,
+	}, hdr)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create book 2 failed: %d %s", rr.Code, rr.Body.String())
+	}
+	book2ID := book2Resp["data"].(map[string]interface{})["id"].(string)
+
+	// Set book 2 as default
+	rr, setResp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/books/"+book2ID+"/default", nil, hdr)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("set default book failed: %d %s", rr.Code, rr.Body.String())
+	}
+	if isDef, _ := setResp["data"].(map[string]interface{})["is_default"].(bool); !isDef {
+		t.Fatalf("expected is_default=true on set response, got %v", setResp["data"])
+	}
+
+	// Verify profile returns default_book_id and listBooks marks book 2 as is_default=true
+	rr, profResp := doJSONReq(t, env.handler, http.MethodGet, "/api/v1/user/profile", nil, hdr)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get profile failed: %d", rr.Code)
+	}
+	if defID, _ := profResp["data"].(map[string]interface{})["default_book_id"].(string); defID != book2ID {
+		t.Fatalf("expected profile default_book_id=%q, got %q", book2ID, defID)
+	}
+
+	rr, listResp := doJSONReq(t, env.handler, http.MethodGet, "/api/v1/books", nil, hdr)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list books failed: %d", rr.Code)
+	}
+	listItems := listResp["data"].([]interface{})
+	defaultCount := 0
+	for _, raw := range listItems {
+		item := raw.(map[string]interface{})
+		if isDef, _ := item["is_default"].(bool); isDef {
+			defaultCount++
+			if item["id"] != book2ID {
+				t.Fatalf("unexpected default book id: %v", item["id"])
+			}
+		}
+	}
+	if defaultCount != 1 {
+		t.Fatalf("expected 1 default book, got %d", defaultCount)
+	}
+
+	// Delete book 2 -> default_book_id should automatically clear
+	rr, _ = doJSONReq(t, env.handler, http.MethodDelete, "/api/v1/books/"+book2ID, nil, hdr)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("delete book 2 failed: %d", rr.Code)
+	}
+	rr, profAfterDel := doJSONReq(t, env.handler, http.MethodGet, "/api/v1/user/profile", nil, hdr)
+	if defID, _ := profAfterDel["data"].(map[string]interface{})["default_book_id"].(string); defID != "" {
+		t.Fatalf("expected cleared default_book_id after deleting book, got %q", defID)
+	}
+
+	// Set non-existent / unauthorized book as default -> 404
+	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/books/nonexistent-id/default", nil, hdr)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown book default, got %d", rr.Code)
+	}
+
+	// Clear default endpoint works cleanly
+	rr, _ = doJSONReq(t, env.handler, http.MethodDelete, "/api/v1/books/default", nil, hdr)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("clear default book failed: %d", rr.Code)
+	}
+}
+
+func TestAiCapabilitiesAndTranscribeAudio(t *testing.T) {
+	env := setupTestEnv(t)
+
+	// Mock OpenAI-compatible Whisper/STT server
+	sttSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/audio/transcriptions" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if err := r.ParseMultipartForm(4 << 20); err != nil {
+			http.Error(w, "bad multipart", http.StatusBadRequest)
+			return
+		}
+		f, hdr, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "missing audio file", http.StatusBadRequest)
+			return
+		}
+		f.Close()
+		modelName := r.FormValue("model")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"text":"刚在星巴克买了拿铁花了 32 元，模型 %s 文件 %s"}`, modelName, hdr.Filename)
+	}))
+	defer sttSrv.Close()
+
+	_, codeResp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/send-code", map[string]string{
+		"email":   "voice@cat7.app",
+		"purpose": "register",
+	}, nil)
+	code := codeResp["data"].(map[string]interface{})["demo_code"].(string)
+
+	rr, regResp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/auth/register", map[string]string{
+		"username": "voiceuser",
+		"name":     "语音测试用户",
+		"email":    "voice@cat7.app",
+		"code":     code,
+		"password": "password123",
+	}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("register failed: %d %s", rr.Code, rr.Body.String())
+	}
+	tok := regResp["data"].(map[string]interface{})["token"].(string)
+	hdr := map[string]string{"Authorization": "Bearer " + tok}
+
+	// Initially STT is not configured (default DeepSeek placeholder)
+	rr, capResp := doJSONReq(t, env.handler, http.MethodGet, "/api/v1/ai/capabilities", nil, hdr)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get capabilities failed: %d", rr.Code)
+	}
+	if sttOK, _ := capResp["data"].(map[string]interface{})["stt_configured"].(bool); sttOK {
+		t.Fatalf("expected stt_configured=false initially")
+	}
+
+	// Uploading audio before STT is configured returns 503 instead of fake text
+	var preBody bytes.Buffer
+	preMW := multipart.NewWriter(&preBody)
+	part0, _ := preMW.CreateFormFile("file", "sample.webm")
+	_, _ = part0.Write([]byte("fake-audio-bytes"))
+	_ = preMW.Close()
+	preReq := httptest.NewRequest(http.MethodPost, "/api/v1/ai/transcribe", &preBody)
+	preReq.Header.Set("Content-Type", preMW.FormDataContentType())
+	preReq.Header.Set("Authorization", "Bearer "+tok)
+	preRR := httptest.NewRecorder()
+	env.handler.ServeHTTP(preRR, preReq)
+	if preRR.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when stt unconfigured, got %d %s", preRR.Code, preRR.Body.String())
+	}
+
+	// Save STT config pointing to mock Whisper server
+	cfg, _ := env.settingsRepo.GetAiConfig(context.Background())
+	cfg.SttBaseURL = sttSrv.URL + "/v1"
+	cfg.SttAPIKey = "sk-real-stt-test"
+	cfg.SttModel = "FunAudioLLM/SenseVoiceSmall"
+	if err := env.settingsRepo.SaveAiConfig(context.Background(), cfg); err != nil {
+		t.Fatalf("SaveAiConfig failed: %v", err)
+	}
+
+	rr, capResp2 := doJSONReq(t, env.handler, http.MethodGet, "/api/v1/ai/capabilities", nil, hdr)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get capabilities 2 failed: %d", rr.Code)
+	}
+	if sttOK, _ := capResp2["data"].(map[string]interface{})["stt_configured"].(bool); !sttOK {
+		t.Fatalf("expected stt_configured=true after configuration")
+	}
+
+	// Transcribe real uploaded audio bytes
+	var audioBody bytes.Buffer
+	mw := multipart.NewWriter(&audioBody)
+	part, _ := mw.CreateFormFile("file", "record.webm")
+	_, _ = part.Write([]byte("RIFF-AUDIO-PAYLOAD"))
+	_ = mw.Close()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/transcribe", &audioBody)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+tok)
+	trRR := httptest.NewRecorder()
+	env.handler.ServeHTTP(trRR, req)
+	if trRR.Code != http.StatusOK {
+		t.Fatalf("transcribe failed: %d %s", trRR.Code, trRR.Body.String())
+	}
+	var trJSON map[string]interface{}
+	_ = json.Unmarshal(trRR.Body.Bytes(), &trJSON)
+	txt, _ := trJSON["data"].(map[string]interface{})["text"].(string)
+	if !strings.Contains(txt, "星巴克") || !strings.Contains(txt, "FunAudioLLM/SenseVoiceSmall") {
+		t.Fatalf("unexpected transcribe text: %q", txt)
+	}
+
+	// Test voice text polishing endpoint
+	rr, polResp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/ai/polish", map[string]string{
+		"text": "嗯...那个，今天午饭吃牛肉面花了 32 元",
+	}, hdr)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("polish failed: %d %s", rr.Code, rr.Body.String())
+	}
+	if pTxt, _ := polResp["data"].(map[string]interface{})["text"].(string); !strings.Contains(pTxt, "牛肉面") {
+		t.Fatalf("unexpected polish text: %q", pTxt)
+	}
+}

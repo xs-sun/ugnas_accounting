@@ -41,6 +41,7 @@ const addingVirtual = ref(false);
 
 // 成员移除状态
 const removingUserId = ref('');
+const regeneratingCode = ref(false);
 
 const headerTitle = computed(() => {
   if (view.value === 'invite') return '邀请成员加入';
@@ -48,7 +49,13 @@ const headerTitle = computed(() => {
   return `${store.activeBook?.name || '当前账本'} · 成员`;
 });
 
-const inviteCodeText = computed(() => store.activeBook?.invite_code || '暂未生成');
+const isOwner = computed(() => {
+  const b = store.activeBook;
+  if (!b) return false;
+  return b.role === 'owner' || Boolean(store.user?.user_id && b.owner_id === store.user.user_id);
+});
+
+const inviteCodeText = computed(() => store.activeBook?.invite_code || '已使用 / 暂未生成');
 
 function closeSheet() {
   emit('update:open', false);
@@ -115,10 +122,10 @@ function onMascotError(e: Event) {
 async function copyInviteCode() {
   const code = store.activeBook?.invite_code || '';
   if (!code) {
-    store.showToast('当前账本暂无可用邀请口令', 'error');
+    store.showToast('当前口令已使用或尚未生成，请先生成新口令', 'error');
     return;
   }
-  const text = `邀请你加入七猫记账「${store.activeBook?.name || '共享账本'}」，邀请口令：${code}`;
+  const text = `邀请你加入七猫记账「${store.activeBook?.name || '共享账本'}」，一次性邀请口令：${code}（仅限使用一次）`;
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       await navigator.clipboard.writeText(text);
@@ -132,9 +139,23 @@ async function copyInviteCode() {
       document.execCommand('copy');
       document.body.removeChild(textarea);
     }
-    store.showToast(`已复制邀请口令 ${code}`, 'success');
+    store.showToast(`已复制一次性口令 ${code}`, 'success');
   } catch {
-    store.showToast(`请手动复制邀请口令：${code}`, 'info', 3500);
+    store.showToast(`请手动复制一次性口令：${code}`, 'info', 3500);
+  }
+}
+
+async function handleRegenerateCode() {
+  if (!store.activeBookId || regeneratingCode.value) return;
+  regeneratingCode.value = true;
+  try {
+    const res = await api.regenerateInviteCode(store.activeBookId, { role: inviteRole.value });
+    await store.refreshBooks();
+    store.showToast(`已生成新的一次性口令 ${res.invite_code}（旧码已作废）`, 'success');
+  } catch (err: any) {
+    store.showToast(err?.message || '生成邀请口令失败', 'error');
+  } finally {
+    regeneratingCode.value = false;
   }
 }
 
@@ -359,26 +380,46 @@ async function handleRemoveMember(member: BookMember) {
             邀请加入「{{ store.activeBook?.name || '当前账本' }}」
           </p>
           <p class="text-[11px] text-[#64748B] mt-0.5">
-            对方通过 6 位邀请口令即可直接加入共同记账
+            每个邀请口令仅限 1 人使用 1 次，用完即失效，防止泄露越权
           </p>
 
           <div
-            class="mt-3.5 p-3 rounded-2xl bg-[#F5F6F8] border border-[#ECEEF2] flex items-center justify-between gap-2"
+            v-if="isOwner"
+            class="mt-3.5 p-3 rounded-2xl bg-[#F5F6F8] border border-[#ECEEF2] space-y-2.5"
           >
-            <div class="text-left min-w-0">
-              <p class="text-[10px] text-[#94A3B8]">账本专属邀请口令</p>
-              <p class="text-base font-bold tracking-wider text-[#18181B] tabular-nums mt-0.5 truncate">
-                {{ inviteCodeText }}
-              </p>
+            <div class="flex items-center justify-between gap-2">
+              <div class="text-left min-w-0">
+                <p class="text-[10px] text-[#94A3B8]">一次性专属邀请口令</p>
+                <p
+                  class="text-sm font-bold tracking-wider tabular-nums mt-0.5 truncate font-mono"
+                  :class="store.activeBook?.invite_code ? 'text-[#18181B]' : 'text-[#94A3B8] font-sans'"
+                >
+                  {{ inviteCodeText }}
+                </p>
+              </div>
+              <div class="flex items-center gap-1.5 shrink-0">
+                <button
+                  v-if="store.activeBook?.invite_code"
+                  type="button"
+                  class="px-3 py-1.5 rounded-xl bg-white border border-[#E2E6EC] text-xs font-semibold text-[#DE8A1E] hover:bg-[#FFF6E8] transition"
+                  @click="copyInviteCode"
+                >
+                  复制
+                </button>
+                <button
+                  type="button"
+                  :disabled="regeneratingCode"
+                  class="px-3 py-1.5 rounded-xl bg-[#18181B] text-white text-xs font-semibold hover:bg-[#27272A] disabled:opacity-60 transition"
+                  @click="handleRegenerateCode"
+                >
+                  {{ regeneratingCode ? '生成中…' : store.activeBook?.invite_code ? '换新码' : '生成新码' }}
+                </button>
+              </div>
             </div>
-            <button
-              type="button"
-              class="px-3 py-1.5 rounded-xl bg-white border border-[#E2E6EC] text-xs font-semibold text-[#DE8A1E] hover:bg-[#FFF6E8] transition shrink-0"
-              @click="copyInviteCode"
-            >
-              复制口令
-            </button>
           </div>
+          <p v-else class="mt-3 text-[11px] text-[#94A3B8]">
+            仅账本管理员可生成与查看一次性邀请口令
+          </p>
         </div>
 
         <div class="app-card p-4">

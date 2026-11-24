@@ -4,7 +4,10 @@ import {
   ApiError,
   clearGatewayAuthCache,
   getStoredAuthToken,
+  getStoredRefreshToken,
+  refreshAccessToken,
   setStoredAuthToken,
+  setStoredRefreshToken,
   setUnauthorizedHandler,
 } from '@/api/client';
 import { todayIso, formatMoney } from '@/utils/format';
@@ -276,6 +279,7 @@ function resetBookScopedState(): void {
 function resetToUnauthenticated(): void {
   stopLedgerStream();
   setStoredAuthToken(null);
+  setStoredRefreshToken(null);
   clearGatewayAuthCache();
   state.adminPreviewAsUser = false;
   state.user = null;
@@ -318,13 +322,22 @@ async function refreshProfile(): Promise<UserProfile | null> {
   }
 }
 
-async function refreshBooks(): Promise<Book[]> {
+async function refreshBooks(opts?: { preferDefault?: boolean }): Promise<Book[]> {
   const books = await api.listBooks();
   state.books = books || [];
   if (state.books.length > 0) {
-    const matched = state.books.some((b) => b.id === state.activeBookId);
-    if (!matched) {
-      state.activeBookId = state.books[0].id;
+    const defaultBook =
+      state.books.find((b) => b.is_default) ||
+      (state.user?.default_book_id
+        ? state.books.find((b) => b.id === state.user?.default_book_id)
+        : undefined);
+    if (opts?.preferDefault && defaultBook) {
+      state.activeBookId = defaultBook.id;
+    } else {
+      const matched = state.books.some((b) => b.id === state.activeBookId);
+      if (!matched) {
+        state.activeBookId = defaultBook?.id || state.books[0].id;
+      }
     }
     if (typeof localStorage !== 'undefined' && state.activeBookId) {
       localStorage.setItem(ACTIVE_BOOK_STORAGE_KEY, state.activeBookId);
@@ -487,16 +500,33 @@ async function refreshBookData(bookId?: string): Promise<void> {
   ]);
 }
 
-async function initApp(force = false): Promise<void> {
+async function initApp(
+  force = false,
+  opts?: { preferDefaultBook?: boolean }
+): Promise<void> {
   if (!force && activeInitPromise) {
     return activeInitPromise;
   }
+  const shouldUseDefaultBook = opts?.preferDefaultBook ?? !state.initialized;
   const currentSeq = ++initSeq;
   const run = (async () => {
     state.loading = true;
     state.initError = '';
     try {
-      const token = getStoredAuthToken();
+      let token = getStoredAuthToken();
+      const refreshTok = getStoredRefreshToken();
+      if (!token && refreshTok) {
+        const refreshed = await refreshAccessToken();
+        if (currentSeq !== initSeq) return;
+        if (refreshed.ok) {
+          token = getStoredAuthToken();
+        } else if (!refreshed.authInvalid) {
+          state.user = null;
+          state.initError = '连接服务失败，请检查网络或稍后重试';
+          state.initialized = true;
+          return;
+        }
+      }
       if (!token) {
         await refreshAuthStatus();
         if (currentSeq !== initSeq) return;
@@ -508,7 +538,11 @@ async function initApp(force = false): Promise<void> {
       if (currentSeq !== initSeq) return;
       state.user = profile;
       state.authRequired = false;
-      await refreshBooks();
+      // 若老版本升级上来尚无 refresh_token，后台静默补领一个 180 天 refresh_token
+      if (!getStoredRefreshToken()) {
+        void refreshAccessToken();
+      }
+      await refreshBooks({ preferDefault: shouldUseDefaultBook });
       if (currentSeq !== initSeq) return;
       if (state.activeBookId) {
         await refreshBookData(state.activeBookId);
@@ -537,6 +571,29 @@ async function initApp(force = false): Promise<void> {
 
   activeInitPromise = run;
   return run;
+}
+
+async function setDefaultBook(bookId: string): Promise<void> {
+  if (!bookId) return;
+  await api.setDefaultBook(bookId);
+  if (state.user) {
+    state.user = { ...state.user, default_book_id: bookId };
+  }
+  state.books = state.books.map((b) => ({
+    ...b,
+    is_default: b.id === bookId,
+  }));
+}
+
+async function clearDefaultBook(): Promise<void> {
+  await api.clearDefaultBook();
+  if (state.user) {
+    state.user = { ...state.user, default_book_id: '' };
+  }
+  state.books = state.books.map((b) => ({
+    ...b,
+    is_default: false,
+  }));
 }
 
 async function switchBook(bookId: string): Promise<void> {
@@ -693,20 +750,32 @@ function closeAvatarModal(): void {
   state.avatarModal.onSelect = null;
 }
 
-async function setAuthToken(token: string, user?: UserProfile): Promise<void> {
+async function setAuthToken(
+  token: string,
+  user?: UserProfile,
+  refreshToken?: string
+): Promise<void> {
   setStoredAuthToken(token);
+  if (refreshToken !== undefined) {
+    setStoredRefreshToken(refreshToken);
+  }
   if (user) {
     state.user = user;
   }
   state.authRequired = false;
   state.initError = '';
   state.adminPreviewAsUser = false;
-  await initApp(true);
+  await initApp(true, { preferDefaultBook: true });
 }
 
 async function logoutToGuest(): Promise<void> {
   stopLedgerStream();
+  const refreshTok = getStoredRefreshToken();
   setStoredAuthToken(null);
+  setStoredRefreshToken(null);
+  if (refreshTok) {
+    void api.logout(refreshTok);
+  }
   state.adminPreviewAsUser = false;
   state.user = null;
   state.books = [];
@@ -748,6 +817,8 @@ const appStore = reactive({
   initApp,
   refreshAuthStatus,
   switchBook,
+  setDefaultBook,
+  clearDefaultBook,
   refreshProfile,
   refreshBooks,
   refreshBookData,

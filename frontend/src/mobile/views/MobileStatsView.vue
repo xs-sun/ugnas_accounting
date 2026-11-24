@@ -219,7 +219,7 @@ watch(
 </script>
 
 <template>
-  <div class="space-y-3.5">
+  <div class="w-full min-w-0 space-y-3.5">
     <!-- 周期切换胶囊 -->
     <div class="p-1 rounded-2xl bg-[#ECEEF2] grid grid-cols-3 text-xs font-semibold">
       <button
@@ -462,7 +462,7 @@ watch(
     </section>
 
     <!-- 趋势柱状图 -->
-    <section class="app-card p-4">
+    <section class="app-card p-4 overflow-hidden min-w-0">
       <div class="flex items-center justify-between mb-2">
         <h3 class="text-sm font-bold text-[#18181B]">
           {{ store.statsPeriod === 'year' ? '月度收支趋势' : '近期每日趋势' }}
@@ -540,7 +540,8 @@ watch(
                 {{ tx.title || tx.category_name || '未命名账单' }}
               </p>
               <p class="text-[10px] text-[#94A3B8] truncate">
-                {{ tx.date ? tx.date.slice(5) : '' }} · {{ tx.category_name || '默认分类' }}
+                {{ tx.date ? tx.date.slice(5) : '' }} · {{ tx.category_name || '默认分类'
+                }}{{ tx.created_by_name ? ` · ${tx.created_by_name}` : '' }}
               </p>
             </div>
           </div>

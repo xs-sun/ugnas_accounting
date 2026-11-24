@@ -26,7 +26,7 @@ func nowLocalStr() string {
 const userSelectColumns = `
 	id, COALESCE(username, ''), name, email, COALESCE(password_hash, ''),
 	COALESCE(avatar, '/avatars/cat-1.jpg'), role, email_bound,
-	COALESCE(gateway_uid, ''), daily_ai_limit, is_active, last_active_at, created_at
+	COALESCE(gateway_uid, ''), COALESCE(default_book_id, ''), daily_ai_limit, is_active, last_active_at, created_at
 `
 
 func (r *UserRepo) CountUsers(ctx context.Context) (int, error) {
@@ -120,7 +120,7 @@ func scanUserRow(row interface {
 	var emailBoundInt, isActiveInt int
 	err := row.Scan(
 		&u.ID, &u.Username, &u.Name, &email, &u.PasswordHash, &u.Avatar, &u.Role,
-		&emailBoundInt, &u.GatewayUID, &u.DailyAiLimit, &isActiveInt, &u.LastActiveAt, &u.CreatedAt,
+		&emailBoundInt, &u.GatewayUID, &u.DefaultBookID, &u.DailyAiLimit, &isActiveInt, &u.LastActiveAt, &u.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -245,6 +245,23 @@ func (r *UserRepo) BindUserEmail(ctx context.Context, id, email string) error {
 
 func (r *UserRepo) UpdateUserPassword(ctx context.Context, id, passwordHash string) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE users SET password_hash = ? WHERE id = ?`, passwordHash, id)
+	return err
+}
+
+func (r *UserRepo) SetDefaultBook(ctx context.Context, userID, bookID string) error {
+	res, err := r.db.ExecContext(ctx, `UPDATE users SET default_book_id = ? WHERE id = ?`, strings.TrimSpace(bookID), userID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *UserRepo) ClearDefaultBookByBookID(ctx context.Context, bookID string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE users SET default_book_id = '' WHERE default_book_id = ?`, bookID)
 	return err
 }
 
@@ -430,4 +447,66 @@ func (r *UserRepo) ComputeUserProfileMetrics(ctx context.Context, userID string,
 	}
 
 	return streakDays, recordedDays, totalTx, healthScore, healthLabel, savingsRate
+}
+
+type RefreshTokenRecord struct {
+	ID         string
+	UserID     string
+	TokenHash  string
+	ExpiresAt  int64
+	LastUsedAt int64
+	RevokedAt  int64
+	CreatedAt  int64
+}
+
+func (r *UserRepo) CreateRefreshToken(ctx context.Context, userID, tokenHash string, expiresAt int64) error {
+	now := time.Now().Unix()
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, last_used_at, revoked_at, created_at)
+		VALUES (?, ?, ?, ?, ?, 0, ?)
+	`, uuid.NewString(), userID, tokenHash, expiresAt, now, now)
+	return err
+}
+
+func (r *UserRepo) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (*RefreshTokenRecord, error) {
+	var rec RefreshTokenRecord
+	err := r.db.QueryRowContext(ctx, `
+		SELECT id, user_id, token_hash, expires_at, last_used_at, revoked_at, created_at
+		FROM refresh_tokens
+		WHERE token_hash = ?
+		LIMIT 1
+	`, tokenHash).Scan(&rec.ID, &rec.UserID, &rec.TokenHash, &rec.ExpiresAt, &rec.LastUsedAt, &rec.RevokedAt, &rec.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (r *UserRepo) ExtendRefreshToken(ctx context.Context, id string, newExpiresAt int64) error {
+	now := time.Now().Unix()
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE refresh_tokens
+		SET expires_at = ?, last_used_at = ?
+		WHERE id = ? AND revoked_at = 0
+	`, newExpiresAt, now, id)
+	return err
+}
+
+func (r *UserRepo) RevokeRefreshTokenByHash(ctx context.Context, tokenHash string) error {
+	now := time.Now().Unix()
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE refresh_tokens SET revoked_at = ? WHERE token_hash = ? AND revoked_at = 0
+	`, now, tokenHash)
+	return err
+}
+
+func (r *UserRepo) RevokeAllUserRefreshTokens(ctx context.Context, userID string) error {
+	now := time.Now().Unix()
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE refresh_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at = 0
+	`, now, userID)
+	return err
 }

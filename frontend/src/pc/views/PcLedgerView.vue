@@ -468,6 +468,7 @@ async function handleDeleteSingle(tx: Transaction) {
               <th class="py-3 px-3 font-semibold">名称 / 备注</th>
               <th class="py-3 px-3 font-semibold">一级 · 二级分类</th>
               <th class="py-3 px-3 font-semibold">账户</th>
+              <th class="py-3 px-3 font-semibold">成员</th>
               <th class="py-3 px-3 font-semibold text-right">金额</th>
               <th class="py-3 px-4 font-semibold text-right">操作</th>
             </tr>
@@ -531,6 +532,13 @@ async function handleDeleteSingle(tx: Transaction) {
               <td class="py-3 px-3 text-[#64748B] whitespace-nowrap">
                 {{ tx.wallet_name || '默认账户' }}
                 <span v-if="tx.to_wallet_name"> → {{ tx.to_wallet_name }}</span>
+              </td>
+              <td class="py-3 px-3 text-[#64748B] whitespace-nowrap">
+                {{
+                  tx.created_by_name ||
+                  store.activeBook?.members?.find((m) => m.user_id === tx.created_by)?.user_name ||
+                  '—'
+                }}
               </td>
               <td
                 class="py-3 px-3 text-right font-bold tabular-nums whitespace-nowrap"
@@ -629,6 +637,15 @@ async function handleDeleteSingle(tx: Transaction) {
                   }}{{ tx.sub_category ? ` · ${tx.sub_category}` : '' }}
                   · {{ tx.wallet_name || '默认账户' }}
                   {{ tx.tx_time ? ` · ${tx.tx_time}` : '' }}
+                  {{
+                    tx.created_by_name ||
+                    store.activeBook?.members?.find((m) => m.user_id === tx.created_by)?.user_name
+                      ? ` · ${
+                          tx.created_by_name ||
+                          store.activeBook?.members?.find((m) => m.user_id === tx.created_by)?.user_name
+                        }`
+                      : ''
+                  }}
                   {{ tx.note ? ` · ${tx.note}` : '' }}
                 </p>
               </div>

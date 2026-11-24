@@ -55,7 +55,7 @@ function handleOpenRegAvatar(curAvatar: string) {
 
 async function handleAuthSuccess(auth: AuthResponse) {
   if (auth.token && store.user?.user_id !== auth.user?.user_id) {
-    await store.setAuthToken(auth.token, auth.user);
+    await store.setAuthToken(auth.token, auth.user, auth.refresh_token);
   }
   emit('success', auth);
   emit('close');

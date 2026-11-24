@@ -16,19 +16,20 @@ func (u *UserContext) IsAdmin() bool {
 }
 
 type User struct {
-	ID           string `json:"id"`
-	Username     string `json:"username"`
-	Name         string `json:"name"`
-	Email        string `json:"email"`
-	PasswordHash string `json:"-"`
-	Avatar       string `json:"avatar"`
-	Role         string `json:"role"`
-	EmailBound   bool   `json:"email_bound"`
-	GatewayUID   string `json:"gateway_uid,omitempty"`
-	DailyAiLimit int    `json:"daily_ai_limit"`
-	IsActive     bool   `json:"is_active"`
-	LastActiveAt string `json:"last_active_at"`
-	CreatedAt    string `json:"created_at"`
+	ID            string `json:"id"`
+	Username      string `json:"username"`
+	Name          string `json:"name"`
+	Email         string `json:"email"`
+	PasswordHash  string `json:"-"`
+	Avatar        string `json:"avatar"`
+	Role          string `json:"role"`
+	EmailBound    bool   `json:"email_bound"`
+	GatewayUID    string `json:"gateway_uid,omitempty"`
+	DefaultBookID string `json:"default_book_id,omitempty"`
+	DailyAiLimit  int    `json:"daily_ai_limit"`
+	IsActive      bool   `json:"is_active"`
+	LastActiveAt  string `json:"last_active_at"`
+	CreatedAt     string `json:"created_at"`
 }
 
 type UserProfile struct {
@@ -41,6 +42,7 @@ type UserProfile struct {
 	Role                   string `json:"role"`
 	EmailBound             bool   `json:"email_bound"`
 	GatewayBound           bool   `json:"gateway_bound"`
+	DefaultBookID          string `json:"default_book_id,omitempty"`
 	DailyAiLimit           int    `json:"daily_ai_limit"`
 	TodayAiCount           int    `json:"today_ai_count"`
 	StreakDays             int    `json:"streak_days"`
@@ -67,6 +69,7 @@ type Book struct {
 	CreatedAt   string       `json:"created_at"`
 	UpdatedAt   string       `json:"updated_at"`
 	Role        string       `json:"role,omitempty"`
+	IsDefault   bool         `json:"is_default"`
 	TxCount     int          `json:"tx_count"`
 	Members     []BookMember `json:"members,omitempty"`
 }
@@ -147,6 +150,8 @@ type Transaction struct {
 	IncludeBudget   bool     `json:"include_budget"`
 	Reimburse       bool     `json:"reimburse"`
 	CreatedBy       string   `json:"created_by"`
+	CreatedByName   string   `json:"created_by_name,omitempty"`
+	CreatedByAvatar string   `json:"created_by_avatar,omitempty"`
 	CreatedAt       string   `json:"created_at"`
 	UpdatedAt       string   `json:"updated_at"`
 	Tags            []Tag    `json:"tags"`
@@ -368,6 +373,10 @@ type AiConfig struct {
 	APIKey          string  `json:"api_key"`
 	HasAPIKey       bool    `json:"has_api_key"`
 	Model           string  `json:"model"`
+	SttBaseURL      string  `json:"stt_base_url"`
+	SttAPIKey       string  `json:"stt_api_key"`
+	HasSttAPIKey    bool    `json:"has_stt_api_key"`
+	SttModel        string  `json:"stt_model"`
 	DailyLimit      int     `json:"daily_limit"`
 	Temperature     float64 `json:"temperature"`
 	OcrEnabled      bool    `json:"ocr_enabled"`

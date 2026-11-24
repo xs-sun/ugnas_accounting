@@ -59,6 +59,9 @@ export interface AuthStatusResponse {
 export interface GatewayAuthResponse {
   status: 'authenticated' | 'need_register';
   token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  refresh_expires_in?: number;
   user?: UserProfile;
   bind_ticket?: string;
   gateway_uid?: string;
@@ -86,6 +89,7 @@ export interface UserProfile {
   role: 'admin' | 'member' | 'guest' | string;
   email_bound: boolean;
   gateway_bound?: boolean;
+  default_book_id?: string;
   daily_ai_limit: number;
   today_ai_count: number;
   streak_days: number;
@@ -102,6 +106,9 @@ export interface UserProfile {
 
 export interface AuthResponse {
   token: string;
+  refresh_token?: string;
+  expires_in?: number;
+  refresh_expires_in?: number;
   user: UserProfile;
 }
 
@@ -137,6 +144,7 @@ export interface Book {
   description: string;
   owner_id: string;
   role?: string;
+  is_default?: boolean;
   color: string;
   budget: number; // in cents
   invite_code: string;
@@ -150,6 +158,13 @@ export interface InviteEmailResponse {
   member: BookMember;
   invite_code: string;
   smtp_sent: boolean;
+  single_use?: boolean;
+}
+
+export interface InviteCodeResponse {
+  invite_code: string;
+  role: 'editor' | 'viewer' | string;
+  single_use: boolean;
 }
 
 // ==================== Wallets ====================
@@ -225,6 +240,8 @@ export interface Transaction {
   reimburse: boolean;
   order_no?: string;
   created_by: string;
+  created_by_name?: string;
+  created_by_avatar?: string;
   created_at: string;
   updated_at: string;
   tags?: Tag[];
@@ -497,6 +514,25 @@ export interface AiTestResponse {
   message: string;
 }
 
+export interface AiCapabilitiesResponse {
+  enabled: boolean;
+  ocr_enabled: boolean;
+  insights_enabled: boolean;
+  stt_configured: boolean;
+  stt_model: string;
+}
+
+export interface AiTranscribeResponse {
+  text: string;
+  raw_text?: string;
+  usage: AiUsageInfo;
+}
+
+export interface AiPolishResponse {
+  text: string;
+  usage: AiUsageInfo;
+}
+
 export interface AiChatMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -554,6 +590,13 @@ export interface AdminAiConfig {
   base_url: string;
   api_key: string;
   has_api_key?: boolean;
+  stt_base_url?: string;
+  stt_api_key?: string;
+  has_stt_api_key?: boolean;
+  stt_model?: string;
+  daily_limit?: number;
+  ocr_enabled?: boolean;
+  insights_enabled?: boolean;
   enabled?: boolean;
 }
 

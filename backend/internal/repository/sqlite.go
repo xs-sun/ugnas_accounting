@@ -51,12 +51,18 @@ func ensureColumn(db *sql.DB, table, col, ddl string) error {
 	return nil
 }
 
-func randomDigits4() string {
-	n, err := rand.Int(rand.Reader, big.NewInt(9000))
-	if err != nil {
-		return "2094"
+func randomInviteToken8() string {
+	const alphabet = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+	out := make([]byte, 8)
+	for i := range out {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+		if err != nil {
+			out[i] = alphabet[i%len(alphabet)]
+			continue
+		}
+		out[i] = alphabet[n.Int64()]
 	}
-	return fmt.Sprintf("%04d", 1000+n.Int64())
+	return "CAT7-" + string(out)
 }
 
 func InitDB(dataDir string) (*DB, error) {
@@ -391,7 +397,32 @@ func InitDB(dataDir string) (*DB, error) {
 		FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
 	);
 
+	CREATE TABLE IF NOT EXISTS book_invite_codes (
+		code TEXT PRIMARY KEY,
+		book_id TEXT NOT NULL,
+		role TEXT NOT NULL DEFAULT 'editor',
+		created_by TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		expires_at TEXT NOT NULL,
+		used_by TEXT NOT NULL DEFAULT '',
+		used_at TEXT NOT NULL DEFAULT '',
+		FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+	);
+
+	CREATE TABLE IF NOT EXISTS refresh_tokens (
+		id TEXT PRIMARY KEY,
+		user_id TEXT NOT NULL,
+		token_hash TEXT NOT NULL UNIQUE,
+		expires_at INTEGER NOT NULL,
+		last_used_at INTEGER NOT NULL,
+		revoked_at INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL,
+		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_activities_book_created ON book_activities(book_id, created_at DESC, id DESC);
+	CREATE INDEX IF NOT EXISTS idx_book_invite_codes_book ON book_invite_codes(book_id, used_at);
+	CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id, revoked_at);
 	CREATE INDEX IF NOT EXISTS idx_email_codes_lookup ON email_codes(email, purpose, used);
 	CREATE INDEX IF NOT EXISTS idx_recurring_book_next ON recurring_rules(book_id, is_active, next_date);
 	CREATE INDEX IF NOT EXISTS idx_ai_usage_user_date ON ai_usage_logs(user_id, created_at);
@@ -407,6 +438,7 @@ func InitDB(dataDir string) (*DB, error) {
 	}{
 		{"username", "TEXT DEFAULT ''"},
 		{"gateway_uid", "TEXT DEFAULT ''"},
+		{"default_book_id", "TEXT DEFAULT ''"},
 	}
 	for _, m := range userMigrations {
 		if err := ensureColumn(db, "users", m.col, m.ddl); err != nil {
@@ -434,29 +466,48 @@ func InitDB(dataDir string) (*DB, error) {
 }
 
 func backfillBookInviteCodes(db *sql.DB) error {
-	rows, err := db.Query(`SELECT id FROM books WHERE invite_code = '' OR invite_code IS NULL`)
+	rows, err := db.Query(`SELECT id, owner_id, COALESCE(invite_code, '') FROM books`)
 	if err != nil {
 		return err
 	}
-	var ids []string
+	type bookRow struct {
+		id         string
+		ownerID    string
+		inviteCode string
+	}
+	var books []bookRow
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err == nil {
-			ids = append(ids, id)
+		var b bookRow
+		if err := rows.Scan(&b.id, &b.ownerID, &b.inviteCode); err == nil {
+			books = append(books, b)
 		}
 	}
 	rows.Close()
 
-	for _, id := range ids {
-		for attempt := 0; attempt < 20; attempt++ {
-			code := "CAT7-" + randomDigits4()
-			var cnt int
-			_ = db.QueryRow(`SELECT count(*) FROM books WHERE invite_code = ?`, code).Scan(&cnt)
-			if cnt == 0 {
-				if _, err := db.Exec(`UPDATE books SET invite_code = ? WHERE id = ?`, code, id); err == nil {
+	for _, b := range books {
+		code := b.inviteCode
+		if code == "" {
+			for attempt := 0; attempt < 20; attempt++ {
+				candidate := randomInviteToken8()
+				var cnt int
+				_ = db.QueryRow(`SELECT count(*) FROM book_invite_codes WHERE UPPER(code) = UPPER(?)`, candidate).Scan(&cnt)
+				if cnt == 0 {
+					code = candidate
 					break
 				}
 			}
+			if code == "" {
+				continue
+			}
+			_, _ = db.Exec(`UPDATE books SET invite_code = ? WHERE id = ?`, code, b.id)
+		}
+		var existingCnt int
+		_ = db.QueryRow(`SELECT count(*) FROM book_invite_codes WHERE book_id = ?`, b.id).Scan(&existingCnt)
+		if existingCnt == 0 && code != "" {
+			_, _ = db.Exec(`
+				INSERT OR IGNORE INTO book_invite_codes (code, book_id, role, created_by, expires_at)
+				VALUES (UPPER(?), ?, 'editor', ?, datetime('now', '+30 days'))
+			`, code, b.id, b.ownerID)
 		}
 	}
 	return nil
