@@ -1197,7 +1197,7 @@ onBeforeUnmount(() => {
           : 'flex-1 h-full min-h-[420px]'
     "
   >
-    <!-- 移动端清空对话：聊天记录按账本存本地，这里可手动清除 -->
+    <!-- 移动端清空对话：聊天记录存服务端，这里可手动清除 -->
     <div
       v-if="mode === 'mobile' && !compact && store.aiMessages.length > 1"
       class="flex justify-end px-4 pt-2 shrink-0"
