@@ -1,4 +1,4 @@
-import { reactive, computed, toRefs } from 'vue';
+import { reactive, computed, toRefs, watch } from 'vue';
 import {
   api,
   ApiError,
@@ -41,6 +41,10 @@ import type {
 
 const ACTIVE_BOOK_STORAGE_KEY = 'cat7_active_book_id';
 const PRIVACY_STORAGE_KEY = 'cat7_privacy_hidden';
+// AI 聊天记录按账本存本地（localStorage），键名后跟账本 id。
+const AI_MESSAGES_STORAGE_PREFIX = 'cat7_ai_messages_';
+// 每个账本最多保留的聊天条数（防 localStorage 爆掉）。
+const AI_MESSAGES_MAX_KEPT = 50;
 
 export type ToastType = 'info' | 'success' | 'error';
 
@@ -342,6 +346,8 @@ async function refreshBooks(opts?: { preferDefault?: boolean }): Promise<Book[]>
     if (typeof localStorage !== 'undefined' && state.activeBookId) {
       localStorage.setItem(ACTIVE_BOOK_STORAGE_KEY, state.activeBookId);
     }
+    // 首次打开 / 账本列表刷新后，读当前账本的聊天记录。
+    loadAiMessagesForBook(state.activeBookId);
   } else {
     state.activeBookId = '';
   }
@@ -600,6 +606,8 @@ async function switchBook(bookId: string): Promise<void> {
   if (!bookId || bookId === state.activeBookId) return;
   state.activeBookId = bookId;
   state.latestBudgetAlert = null;
+  // 切账本时读该账本的聊天记录（各账本分开存）。
+  loadAiMessagesForBook(bookId);
   if (typeof localStorage !== 'undefined') {
     localStorage.setItem(ACTIVE_BOOK_STORAGE_KEY, bookId);
   }
@@ -794,11 +802,81 @@ function openAuthRequired(): void {
 
 function appendAiMessage(msg: AiChatMessage): void {
   state.aiMessages.push(msg);
+  persistAiMessages();
 }
 
 function clearAiMessages(): void {
   state.aiMessages = createDefaultWelcomeMessage();
+  if (typeof localStorage !== 'undefined' && state.activeBookId) {
+    try {
+      localStorage.removeItem(AI_MESSAGES_STORAGE_PREFIX + state.activeBookId);
+    } catch {
+      // ignore
+    }
+  }
 }
+
+function aiMessagesStorageKey(bookId: string): string {
+  return AI_MESSAGES_STORAGE_PREFIX + bookId;
+}
+
+// 聊天记录落盘：文字、草稿、OCR 文本、已入账状态都存；
+// 图片是 data URL（单张几百 KB），不存，避免 localStorage 爆掉。
+function serializeAiMessages(messages: AiChatMessage[]): AiChatMessage[] {
+  return messages.slice(-AI_MESSAGES_MAX_KEPT).map((m) => {
+    const { image: _image, editing: _editing, ...rest } = m;
+    void _image;
+    void _editing;
+    return rest as AiChatMessage;
+  });
+}
+
+function persistAiMessages(): void {
+  if (typeof localStorage === 'undefined' || !state.activeBookId) return;
+  const key = aiMessagesStorageKey(state.activeBookId);
+  try {
+    localStorage.setItem(key, JSON.stringify(serializeAiMessages(state.aiMessages)));
+  } catch {
+    // 空间不足时只留最近 20 条再试一次，还不行就放弃（不影响记账本身）。
+    try {
+      localStorage.setItem(
+        key,
+        JSON.stringify(serializeAiMessages(state.aiMessages).slice(-20))
+      );
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function loadAiMessagesForBook(bookId: string): void {
+  if (typeof localStorage === 'undefined' || !bookId) return;
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(aiMessagesStorageKey(bookId));
+  } catch {
+    raw = null;
+  }
+  if (!raw) return;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      state.aiMessages = (parsed as AiChatMessage[]).map((m) => ({
+        ...m,
+        editing: false,
+      }));
+    }
+  } catch {
+    // 损坏的历史直接丢弃，保留默认欢迎语。
+  }
+}
+
+// 聊天记录有任何变化（新增、入账、OCR 文本回填、草稿编辑）都实时落盘。
+watch(
+  () => state.aiMessages,
+  () => persistAiMessages(),
+  { deep: true }
+);
 
 function hasAuthToken(): boolean {
   return Boolean(getStoredAuthToken());
