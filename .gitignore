@@ -57,6 +57,8 @@ logs/
 *.swp
 *~
 
-# 本地 OCR（RapidOCR 程序 + PP-OCRv6 模型，体积大，不进仓库；CI/本地用 scripts/download-rapidocr.sh 下载）
-third_party/
+# 本地 OCR：RapidOCR 程序（181MB，不进仓库；CI/本地用 scripts/download-rapidocr.sh 下载）
+# PP-OCRv6 模型（31MB）已放进仓库，构建时直接用，不用再下载。
+third_party/rapidocr/ppu-paddle-ocr
+third_party/rapidocr/.download-tmp/
 rootfs_common/ocr/
