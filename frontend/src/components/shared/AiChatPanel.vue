@@ -54,10 +54,19 @@ type HoldActionZone = 'send' | 'cancel' | 'transcribe';
 const voiceInputMode = ref(false); // false=文本输入栏, true=微信「按住 说话」按钮
 const voiceOverlayOpen = ref(false);
 const mediaTrayOpen = ref(false);
+
+// 草稿调整：账户 / 日期用自定义底部弹出层，不用原生 select / date 输入
+// （原生控件样式和记账页设计对不上）。
+type PickerKind = 'wallet' | 'date';
+const pickerOpen = ref<PickerKind | null>(null);
+const pickerDraft = ref<AiDraft | null>(null);
+const calYear = ref(0);
+const calMonth = ref(0); // 0-11
+// OCR 查看器：点上传的图片，看原图 + 本地 OCR 认出的文字。
+const ocrViewer = ref<{ image: string; text: string; label: string } | null>(null);
 const voiceMode = ref<VoiceCaptureMode>('speech');
 const holdTarget = ref<HoldActionZone>('send');
-const voiceStatusText = ref('松手 发语音');
-const voiceErrorText = ref('');
+const voiceStatusText = ref('松手 发语音');const voiceErrorText = ref('');
 const voiceActiveText = ref('');
 const voiceTranscribing = ref(false);
 const polishingText = ref(false);
@@ -168,13 +177,84 @@ function selectDraftCategory(draft: AiDraft, cat: CategoryTreeNode) {
   }
 }
 
-function onDraftWalletChange(draft: AiDraft, e: Event) {
-  const walletId = (e.target as HTMLSelectElement).value;
-  const wallet = store.activeWallets.find((w) => w.id === walletId);
-  if (wallet) {
-    draft.wallet_id = wallet.id;
-    draft.wallet_name = wallet.name;
+function formatDraftDate(dateStr?: string): string {
+  if (!dateStr) return '选择日期';
+  const m = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return dateStr;
+  return `${m[1]}年${Number(m[2])}月${Number(m[3])}日`;
+}
+
+function openWalletPicker(draft: AiDraft) {
+  pickerDraft.value = draft;
+  pickerOpen.value = 'wallet';
+}
+
+function openDatePicker(draft: AiDraft) {
+  pickerDraft.value = draft;
+  const d = draft.date ? new Date(draft.date + 'T00:00:00') : new Date();
+  calYear.value = d.getFullYear();
+  calMonth.value = d.getMonth();
+  pickerOpen.value = 'date';
+}
+
+function closePicker() {
+  pickerOpen.value = null;
+  pickerDraft.value = null;
+}
+
+function selectPickerWallet(wallet: { id: string; name: string }) {
+  const d = pickerDraft.value;
+  if (d) {
+    d.wallet_id = wallet.id;
+    d.wallet_name = wallet.name;
   }
+  closePicker();
+}
+
+function selectPickerDate(day: number) {
+  const d = pickerDraft.value;
+  if (d) {
+    d.date = `${calYear.value}-${String(calMonth.value + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+  closePicker();
+}
+
+function selectTodayDate() {
+  const d = pickerDraft.value;
+  if (d) d.date = todayIso();
+  closePicker();
+}
+
+function shiftCalMonth(delta: number) {
+  const m = calMonth.value + delta;
+  calYear.value = calYear.value + Math.floor(m / 12);
+  calMonth.value = ((m % 12) + 12) % 12;
+}
+
+// 月历格子：周一起始，前面补空白格。
+const calCells = computed(() => {
+  const first = new Date(calYear.value, calMonth.value, 1);
+  const startWeekday = (first.getDay() + 6) % 7;
+  const daysInMonth = new Date(calYear.value, calMonth.value + 1, 0).getDate();
+  const cells: { day: number; inMonth: boolean; dateStr: string }[] = [];
+  for (let i = 0; i < startWeekday; i++) cells.push({ day: 0, inMonth: false, dateStr: '' });
+  for (let day = 1; day <= daysInMonth; day++) {
+    cells.push({
+      day,
+      inMonth: true,
+      dateStr: `${calYear.value}-${String(calMonth.value + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+    });
+  }
+  return cells;
+});
+
+function openOcrViewer(msg: AiChatMessage) {
+  if (!msg.image) return;
+  ocrViewer.value = { image: msg.image, text: msg.ocrText || '', label: msg.imageLabel || '账单图片' };
+}
+
+function closeOcrViewer() {
+  ocrViewer.value = null;
 }
 
 function toggleEditMessage(msg: AiChatMessage) {
@@ -924,13 +1004,14 @@ async function runOcrRequest(payload: {
   }
 
   mediaTrayOpen.value = false;
-  store.appendAiMessage({
+  const userMsg: AiChatMessage = {
     id: `u_img_${Date.now()}`,
     role: 'user',
     text: '',
     image: payload.image,
     imageLabel: payload.imageLabel,
-  });
+  };
+  store.appendAiMessage(userMsg);
 
   sending.value = true;
   await nextTick();
@@ -943,6 +1024,8 @@ async function runOcrRequest(payload: {
       demo: payload.demo,
     });
     updateUsageFromResponse(res.usage);
+    // 识别文字留给图片查看器：点图片能看到 OCR 原文。
+    if (res.raw_text) userMsg.ocrText = res.raw_text;
     store.appendAiMessage({
       id: `a_ocr_${Date.now() + 1}`,
       role: 'assistant',
@@ -1070,7 +1153,8 @@ onBeforeUnmount(() => {
           <div class="max-w-[82%] space-y-1.5">
             <div
               v-if="m.image"
-              class="rounded-2xl overflow-hidden border border-[#ECEEF2] bg-white shadow-xs"
+              class="rounded-2xl overflow-hidden border border-[#ECEEF2] bg-white shadow-xs cursor-pointer active:scale-[0.98] transition"
+              @click="openOcrViewer(m)"
             >
               <img
                 :src="m.image"
@@ -1081,7 +1165,9 @@ onBeforeUnmount(() => {
                 class="px-2.5 py-1 bg-[#F8F9FB] text-[10px] text-[#64748B] flex items-center justify-between gap-2"
               >
                 <span class="truncate">{{ m.imageLabel || '账单图片' }}</span>
-                <span class="text-[#DE8A1E] font-semibold shrink-0">OCR 已识别</span>
+                <span class="text-[#DE8A1E] font-semibold shrink-0">{{
+                  m.ocrText ? '查看识别结果 ›' : 'OCR 已识别'
+                }}</span>
               </div>
             </div>
 
@@ -1306,27 +1392,44 @@ onBeforeUnmount(() => {
                 <div class="grid grid-cols-2 gap-2">
                   <div>
                     <label class="block text-[10px] text-[#94A3B8] mb-1">支付账户</label>
-                    <select
-                      :value="m.draft.wallet_id || store.activeWallets[0]?.id || ''"
-                      class="w-full text-[11px] font-semibold bg-[#F5F6F8] border border-[#E6E9EF] rounded-xl px-2 py-1.5 outline-none focus:border-[#DE8A1E]"
-                      @change="onDraftWalletChange(m.draft, $event)"
+                    <button
+                      type="button"
+                      class="w-full text-[11px] font-semibold bg-[#F5F6F8] border border-[#E6E9EF] rounded-xl px-2.5 py-1.5 flex items-center justify-between gap-1 active:bg-[#FFF6E8]"
+                      @click="openWalletPicker(m.draft)"
                     >
-                      <option
-                        v-for="w in store.activeWallets"
-                        :key="w.id"
-                        :value="w.id"
+                      <span class="truncate">{{
+                        m.draft.wallet_name || store.activeWallets[0]?.name || '选择账户'
+                      }}</span>
+                      <svg
+                        class="w-3.5 h-3.5 shrink-0 text-[#94A3B8]"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
                       >
-                        {{ w.name }}
-                      </option>
-                    </select>
+                        <path d="M6 9l6 6 6-6" />
+                      </svg>
+                    </button>
                   </div>
                   <div>
                     <label class="block text-[10px] text-[#94A3B8] mb-1">日期</label>
-                    <input
-                      v-model="m.draft.date"
-                      type="date"
-                      class="w-full text-[11px] font-semibold bg-[#F5F6F8] border border-[#E6E9EF] rounded-xl px-2 py-1.5 outline-none focus:border-[#DE8A1E]"
-                    />
+                    <button
+                      type="button"
+                      class="w-full text-[11px] font-semibold bg-[#F5F6F8] border border-[#E6E9EF] rounded-xl px-2.5 py-1.5 flex items-center justify-between gap-1 active:bg-[#FFF6E8]"
+                      @click="openDatePicker(m.draft)"
+                    >
+                      <span class="truncate">{{ formatDraftDate(m.draft.date) }}</span>
+                      <svg
+                        class="w-3.5 h-3.5 shrink-0 text-[#94A3B8]"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <rect x="3.5" y="5" width="17" height="15.5" rx="3.5" />
+                        <path d="M16 3v3.5M8 3v3.5M3.5 10h17" />
+                      </svg>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -1828,5 +1931,125 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </Teleport>
+
+    <!-- 账户选择：底部弹出层（不用原生 select） -->
+    <div
+      v-if="pickerOpen === 'wallet'"
+      class="fixed inset-0 z-[100] flex items-end justify-center"
+    >
+      <div class="absolute inset-0 bg-[#14171A]/50" @click="closePicker" />
+      <div
+        class="relative w-full max-w-md bg-white rounded-t-3xl px-4 pt-2 pb-6 max-h-[70vh] overflow-y-auto phone-scroll"
+      >
+        <div class="w-10 h-1 rounded-full bg-[#E6E9EF] mx-auto my-2" />
+        <p class="text-sm font-bold text-[#18181B] text-center mb-3">选择支付账户</p>
+        <button
+          v-for="w in store.activeWallets"
+          :key="w.id"
+          type="button"
+          class="w-full flex items-center justify-between px-3 py-3 rounded-xl text-sm transition"
+          :class="
+            pickerDraft?.wallet_id === w.id || (!pickerDraft?.wallet_id && store.activeWallets[0]?.id === w.id)
+              ? 'bg-[#FFF6E8] text-[#DE8A1E] font-semibold'
+              : 'text-[#18181B] hover:bg-[#F5F6F8]'
+          "
+          @click="selectPickerWallet(w)"
+        >
+          <span>{{ w.name }}</span>
+          <span
+            v-if="pickerDraft?.wallet_id === w.id || (!pickerDraft?.wallet_id && store.activeWallets[0]?.id === w.id)"
+            >✓</span
+          >
+        </button>
+      </div>
+    </div>
+
+    <!-- 日期选择：底部弹出层·月历（不用原生 date 输入） -->
+    <div
+      v-if="pickerOpen === 'date'"
+      class="fixed inset-0 z-[100] flex items-end justify-center"
+    >
+      <div class="absolute inset-0 bg-[#14171A]/50" @click="closePicker" />
+      <div class="relative w-full max-w-md bg-white rounded-t-3xl px-4 pt-2 pb-6">
+        <div class="w-10 h-1 rounded-full bg-[#E6E9EF] mx-auto my-2" />
+        <div class="flex items-center justify-between mb-2">
+          <button
+            type="button"
+            class="w-8 h-8 rounded-full bg-[#F5F6F8] text-[#475569] text-base leading-none"
+            @click="shiftCalMonth(-1)"
+          >
+            ‹
+          </button>
+          <p class="text-sm font-bold text-[#18181B]">{{ calYear }}年{{ calMonth + 1 }}月</p>
+          <button
+            type="button"
+            class="w-8 h-8 rounded-full bg-[#F5F6F8] text-[#475569] text-base leading-none"
+            @click="shiftCalMonth(1)"
+          >
+            ›
+          </button>
+        </div>
+        <div class="grid grid-cols-7 text-center text-[11px] text-[#94A3B8] mb-1">
+          <span v-for="wd in ['一', '二', '三', '四', '五', '六', '日']" :key="wd">{{ wd }}</span>
+        </div>
+        <div class="grid grid-cols-7 gap-0.5">
+          <button
+            v-for="(cell, i) in calCells"
+            :key="i"
+            type="button"
+            :disabled="!cell.inMonth"
+            class="h-9 rounded-full text-xs transition"
+            :class="
+              cell.inMonth
+                ? pickerDraft?.date === cell.dateStr
+                  ? 'bg-[#DE8A1E] text-white font-bold'
+                  : 'text-[#18181B] hover:bg-[#F5F6F8]'
+                : 'text-transparent'
+            "
+            @click="cell.inMonth && selectPickerDate(cell.day)"
+          >
+            {{ cell.day || '' }}
+          </button>
+        </div>
+        <button
+          type="button"
+          class="w-full mt-3 py-2 rounded-xl bg-[#F5F6F8] text-xs font-semibold text-[#475569]"
+          @click="selectTodayDate"
+        >
+          回到今天
+        </button>
+      </div>
+    </div>
+
+    <!-- OCR 查看器：原图 + 识别文字 -->
+    <div
+      v-if="ocrViewer"
+      class="fixed inset-0 z-[100] bg-[#14171A]/85 flex flex-col"
+      @click="closeOcrViewer"
+    >
+      <div class="flex items-center justify-between px-4 pt-12 pb-2 text-white shrink-0">
+        <span class="text-sm font-semibold truncate">{{ ocrViewer.label }}</span>
+        <button
+          type="button"
+          class="w-8 h-8 shrink-0 rounded-full bg-white/15 text-lg leading-none"
+          @click="closeOcrViewer"
+        >
+          ×
+        </button>
+      </div>
+      <div class="flex-1 overflow-y-auto px-4 pb-8 space-y-3 phone-scroll" @click.stop>
+        <img :src="ocrViewer.image" alt="账单图片" class="w-full rounded-2xl" />
+        <div class="bg-white rounded-2xl p-3">
+          <p class="text-[11px] font-semibold text-[#94A3B8] mb-1.5">OCR 识别文字</p>
+          <p
+            v-if="ocrViewer.text"
+            class="text-xs leading-relaxed text-[#18181B] whitespace-pre-wrap break-words"
+          >
+            {{ ocrViewer.text }}
+          </p>
+          <p v-else class="text-xs text-[#94A3B8]">这次没有返回识别文字。</p>
+        </div>
+      </div>
+    </div>
   </div>
 </template>

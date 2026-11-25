@@ -192,26 +192,67 @@ func (s *AiService) ensureBookMember(ctx context.Context, userID, bookID string)
 	return bookID
 }
 
+// billSubCategoryAliases 把模型常自造的二级分类名映射到账本里真实存在的一级/二级分类。
+// 比如模型会把钢化膜说成“手机配件”，但账本里没有这个二级分类，只有购物/数码家电。
+var billSubCategoryAliases = map[string][2]string{
+	"手机配件": {"购物", "数码家电"},
+	"数码电器": {"购物", "数码家电"},
+	"数码家电": {"购物", "数码家电"},
+	"手机壳":  {"购物", "数码家电"},
+	"钢化膜":  {"购物", "数码家电"},
+	"耳机":   {"购物", "数码家电"},
+	"充电器":  {"购物", "数码家电"},
+	"平板":   {"购物", "数码家电"},
+	"电脑":   {"购物", "数码家电"},
+}
+
 func (s *AiService) resolveCategoryMatch(ctx context.Context, bookID, txType, catHint, subHint string) (catID, catName, subName, icon, color, bgColor string) {
 	cats, _ := s.catRepo.ListCategories(ctx, bookID, txType)
 	var parents []model.Category
 	parentByID := make(map[string]model.Category)
+	childrenByParent := make(map[string][]model.Category)
 	for _, c := range cats {
 		if c.ParentID == nil || *c.ParentID == "" {
 			parents = append(parents, c)
 			parentByID[c.ID] = c
+		} else {
+			childrenByParent[*c.ParentID] = append(childrenByParent[*c.ParentID], c)
 		}
 	}
-	// Try matching parent category by name
-	for _, p := range parents {
-		if catHint != "" && (p.Name == catHint || strings.Contains(p.Name, catHint) || strings.Contains(catHint, p.Name)) {
-			return p.ID, p.Name, subHint, p.Icon, p.Color, p.BgColor
+	findParent := func(name string) (model.Category, bool) {
+		for _, p := range parents {
+			if p.Name == name || strings.Contains(p.Name, name) || strings.Contains(name, p.Name) {
+				return p, true
+			}
+		}
+		return model.Category{}, false
+	}
+	findChild := func(parentID, name string) (model.Category, bool) {
+		for _, ch := range childrenByParent[parentID] {
+			if ch.Name == name || strings.Contains(ch.Name, name) || strings.Contains(name, ch.Name) {
+				return ch, true
+			}
+		}
+		return model.Category{}, false
+	}
+	// 1. 别名映射优先：模型自造的二级分类名（手机配件/数码电器）→ 购物/数码家电。
+	for _, hint := range []string{subHint, catHint} {
+		if hint == "" {
+			continue
+		}
+		if a, ok := billSubCategoryAliases[hint]; ok {
+			if p, ok := findParent(a[0]); ok {
+				if ch, ok := findChild(p.ID, a[1]); ok {
+					return p.ID, p.Name, ch.Name, p.Icon, p.Color, p.BgColor
+				}
+			}
 		}
 	}
-	// Try matching subcategory name directly
+	// 2. 二级分类名本身真实存在：以它为准定一级（能纠正模型给错的一级，
+	// 比如一级给了餐饮、二级是数码家电时，应以数码家电为准回到购物）。
 	if subHint != "" {
 		for _, c := range cats {
-			if c.ParentID != nil && *c.ParentID != "" && (c.Name == subHint || strings.Contains(c.Name, subHint)) {
+			if c.ParentID != nil && *c.ParentID != "" && (c.Name == subHint || strings.Contains(c.Name, subHint) || strings.Contains(subHint, c.Name)) {
 				if p, ok := parentByID[*c.ParentID]; ok {
 					return p.ID, p.Name, c.Name, p.Icon, p.Color, p.BgColor
 				}
@@ -219,18 +260,46 @@ func (s *AiService) resolveCategoryMatch(ctx context.Context, bookID, txType, ca
 			}
 		}
 	}
-	if len(parents) > 0 {
-		p := parents[0]
-		return p.ID, p.Name, subHint, p.Icon, p.Color, p.BgColor
+	// 3. 一级分类名能对上：只保留属于该一级的二级分类，不属于的丢掉——
+	// 不要再出现“餐饮/手机配件”这种一级二级对不上的组合。
+	for _, p := range parents {
+		if catHint != "" && (p.Name == catHint || strings.Contains(p.Name, catHint) || strings.Contains(catHint, p.Name)) {
+			sub := ""
+			if subHint != "" {
+				if ch, ok := findChild(p.ID, subHint); ok {
+					sub = ch.Name
+				}
+			}
+			return p.ID, p.Name, sub, p.Icon, p.Color, p.BgColor
+		}
 	}
-	if len(cats) > 0 {
-		c := cats[0]
-		return c.ID, c.Name, subHint, c.Icon, c.Color, c.BgColor
+	// 4. 一级名本身是个二级分类名（模型把层级放错了）：按二级分类找。
+	if catHint != "" {
+		for _, c := range cats {
+			if c.ParentID != nil && *c.ParentID != "" && (c.Name == catHint || strings.Contains(c.Name, catHint) || strings.Contains(catHint, c.Name)) {
+				if p, ok := parentByID[*c.ParentID]; ok {
+					return p.ID, p.Name, c.Name, p.Icon, p.Color, p.BgColor
+				}
+			}
+		}
 	}
-	if txType == "income" {
-		return "", "工资", subHint, "wallet", "#3E8E63", "#ECF6F0"
+	// 5. 兜底：没有任何提示时才用第一个一级分类；提示存在但一个都对不上时，
+	// 如实返回提示名、不选分类（草稿里用户再点选），不要默认成餐饮。
+	if catHint == "" && subHint == "" {
+		if len(parents) > 0 {
+			p := parents[0]
+			return p.ID, p.Name, "", p.Icon, p.Color, p.BgColor
+		}
+		if len(cats) > 0 {
+			c := cats[0]
+			return c.ID, c.Name, "", c.Icon, c.Color, c.BgColor
+		}
+		if txType == "income" {
+			return "", "工资", "", "wallet", "#3E8E63", "#ECF6F0"
+		}
+		return "", "餐饮", "", "bowl", "#D6553E", "#FDF1EE"
 	}
-	return "", "餐饮", subHint, "bowl", "#D6553E", "#FDF1EE"
+	return "", catHint, "", "tag", "#64748B", "#F5F6F8"
 }
 
 func (s *AiService) resolveWalletMatch(ctx context.Context, bookID, text string) (walletID, walletName string) {
@@ -238,11 +307,16 @@ func (s *AiService) resolveWalletMatch(ctx context.Context, bookID, text string)
 	if len(wallets) == 0 {
 		return "", "微信支付"
 	}
+	// 付款方式原文有多种写法：花呗/余额宝是支付宝，信用卡/借记卡/储蓄卡是银行卡。
+	// 以前这里不认花呗和信用卡，提示对不上就默认落到微信——支付宝花呗的账单
+	// 会被错认成微信账户。
 	kw := ""
 	switch {
-	case strings.Contains(text, "支付宝"):
+	case strings.Contains(text, "支付宝") || strings.Contains(text, "花呗") || strings.Contains(text, "余额宝"):
 		kw = "支付宝"
-	case strings.Contains(text, "招行") || strings.Contains(text, "银行卡") || strings.Contains(text, "储蓄卡"):
+	case strings.Contains(text, "京东白条"):
+		kw = "京东白条"
+	case strings.Contains(text, "银行卡") || strings.Contains(text, "储蓄卡") || strings.Contains(text, "信用卡") || strings.Contains(text, "借记卡") || strings.Contains(text, "银行"):
 		kw = "银行卡"
 	case strings.Contains(text, "现金"):
 		kw = "现金"
@@ -256,11 +330,7 @@ func (s *AiService) resolveWalletMatch(ctx context.Context, bookID, text string)
 			}
 		}
 	}
-	for _, w := range wallets {
-		if strings.Contains(w.Name, "微信") {
-			return w.ID, w.Name
-		}
-	}
+	// 提示对不上任何账户时不要默认微信：用账本的第一个账户（通常是默认账户）。
 	return wallets[0].ID, wallets[0].Name
 }
 
@@ -296,7 +366,7 @@ func inferCategoryHintFromText(text string, isIncome bool) (catName, subName str
 		return "交通", "打车出行"
 	case containsAny(text, "高铁", "机票", "火车"):
 		return "交通", "高铁机票"
-	case containsAny(text, "加油", "停车"):
+	case containsAny(text, "加油", "停车", "中海油", "中石油", "中石化"):
 		return "交通", "加油停车"
 	case containsAny(text, "电影", "演出"):
 		return "娱乐", "电影演出"
@@ -312,9 +382,13 @@ func inferCategoryHintFromText(text string, isIncome bool) (catName, subName str
 		return "居家", "宽带话费"
 	case containsAny(text, "药", "医院", "体检"):
 		return "医疗", "药品购置"
-	case containsAny(text, "书", "课程", "学习", "培训"):
+	case containsAny(text, "书籍", "买书", "书店", "本书", "看书", "课程", "学习", "培训"):
 		return "学习", "书籍资料"
-	case containsAny(text, "猫", "狗", "宠物"):
+	case containsAny(text, "数码电器", "数码家电", "手机配件", "钢化膜", "手机壳", "耳机", "充电器"):
+		return "购物", "数码家电"
+	// “猫”单字会误伤天猫：只有猫粮/猫砂/宠物/狗才算宠物，没有这些词
+	// 且唯一的“猫”来自“天猫”时不算（天猫衣服不能分成宠物）。
+	case containsAny(text, "猫粮", "猫砂", "狗", "宠物") || (strings.Contains(text, "猫") && !strings.Contains(text, "天猫")):
 		return "宠物", "粮食零食"
 	case containsAny(text, "红包", "礼金", "送礼"):
 		return "人情", "红包礼金"
@@ -336,11 +410,53 @@ func containsAny(s string, subs ...string) bool {
 	return false
 }
 
+// cleanBillTitle 去掉标题里的打码星号：支付宝/微信账单常把商户名打码成“图拉**店”。
+// 标题里绝不能出现 * 号；打码的商户名只去掉星号（图拉店），商品名由模型提示词负责。
+func cleanBillTitle(title string) string {
+	return strings.ReplaceAll(strings.TrimSpace(title), "*", "")
+}
+
+// allowedExpenseCategories 把账本的支出分类树拼成给模型的允许列表，
+// 模型只能从里面选一级/二级，不能自造（比如“手机配件”账本里根本没有）。
+func (s *AiService) allowedExpenseCategories(ctx context.Context, bookID string) string {
+	cats, _ := s.catRepo.ListCategories(ctx, bookID, "expense")
+	children := make(map[string][]string)
+	var order []string
+	seen := make(map[string]bool)
+	for _, c := range cats {
+		if c.ParentID == nil || *c.ParentID == "" {
+			if !seen[c.Name] {
+				seen[c.Name] = true
+				order = append(order, c.Name)
+			}
+			children[c.Name] = []string{}
+		}
+	}
+	parentName := make(map[string]string)
+	for _, c := range cats {
+		if c.ParentID == nil || *c.ParentID == "" {
+			parentName[c.ID] = c.Name
+		}
+	}
+	for _, c := range cats {
+		if c.ParentID != nil && *c.ParentID != "" {
+			if p, ok := parentName[*c.ParentID]; ok {
+				children[p] = append(children[p], c.Name)
+			}
+		}
+	}
+	var parts []string
+	for _, name := range order {
+		parts = append(parts, name+"（"+strings.Join(children[name], "/")+"）")
+	}
+	return strings.Join(parts, "，")
+}
+
 func cleanDraftTitle(raw, fallback string) string {
 	replacer := strings.NewReplacer(
 		"刚才在", "", "刚才", "", "今天", "", "昨天", "", "花了", "", "花费", "", "消费", "",
 		"一共", "", "元", "", "块", "", "微信支付", "", "支付宝", "", "招商银行卡", "", "银行卡", "",
-		"现金", "", "微信", "", "用", "", "，", "", ",", "", "。", "", "！", "", "!", "",
+		"现金", "", "微信", "", "用", "", "，", "", ",", "", "。", "", "！", "", "!", "", "*", "",
 	)
 	cleaned := replacer.Replace(raw)
 	cleaned = numRegex.ReplaceAllString(cleaned, "")
@@ -677,13 +793,17 @@ func (s *AiService) OCR(ctx context.Context, userID, bookID, demo string, fileBy
 		}
 		// 2. 远程视觉模型（配了真实 key 时）。
 		if amtCents == 0 && len(fileBytes) > 0 && strings.TrimSpace(cfg.APIKey) != "" && !strings.HasPrefix(cfg.APIKey, "sk-cat7-") && strings.TrimSpace(cfg.BaseURL) != "" {
-			if rRaw, rAmt, rTitle, rCat, rSub, rWallet, ok := s.tryRemoteOCR(ctx, cfg, fileBytes); ok && rAmt > 0 {
+			if rRaw, rAmt, rTitle, rCat, rSub, rWallet, ok := s.tryRemoteOCR(ctx, cfg, bookID, fileBytes); ok && rAmt > 0 {
 				rawText = rRaw
 				amtCents = rAmt
 				title = rTitle
 				catHint = rCat
 				subHint = rSub
 				walletHint = rWallet
+				// 远程视觉不返回日期：从它读出的文字里找交易日期，找不到才用今天。
+				if d := extractBillDate(rRaw); d != "" {
+					billDate = d
+				}
 			}
 		}
 		// 3. 纯文本小票文件（.txt 上传）：直接解析文本内容。本地文本兜底只认
@@ -705,6 +825,8 @@ func (s *AiService) OCR(ctx context.Context, userID, bookID, demo string, fileBy
 		}
 	}
 
+	// 标题最后一道清洗：任何路径来的标题都不许带打码星号。
+	title = cleanBillTitle(title)
 	cid, cname, sub, icon, color, bg := s.resolveCategoryMatch(ctx, bookID, "expense", catHint, subHint)
 	wid, wname := s.resolveWalletMatch(ctx, bookID, walletHint)
 	draft := &model.AiDraft{
@@ -745,7 +867,7 @@ func (s *AiService) OCR(ctx context.Context, userID, bookID, demo string, fileBy
 	}, nil
 }
 
-func (s *AiService) tryRemoteOCR(ctx context.Context, cfg *model.AiConfig, fileBytes []byte) (rawText string, amtCents int64, title, cat, sub, wallet string, ok bool) {
+func (s *AiService) tryRemoteOCR(ctx context.Context, cfg *model.AiConfig, bookID string, fileBytes []byte) (rawText string, amtCents int64, title, cat, sub, wallet string, ok bool) {
 	// 图片识别用视觉模型：聊天模型大多是纯文本模型，看不懂图片；
 	// 没配视觉模型时才退回聊天模型。
 	visionModel := strings.TrimSpace(cfg.VisionModel)
@@ -759,9 +881,11 @@ func (s *AiService) tryRemoteOCR(ctx context.Context, cfg *model.AiConfig, fileB
 			{
 				"role": "user",
 				"content": []map[string]interface{}{
-					{"type": "text", "text": `你是小票识别助手。仔细阅读这张小票或账单图片，只返回 JSON，不要解释。
+					{"type": "text", "text": fmt.Sprintf(`你是小票识别助手。仔细阅读这张小票或账单图片，只返回 JSON，不要解释。
 要求：逐行读出商户名、每件商品与金额、合计金额、支付方式；合计金额以图片上印的“合计/总计/实付”为准，不要自己把单项加起来；看不清的字段填空字符串；金额必须是数字。
-返回格式：{"raw_text":"图片上的全部文字，按行排列","amount_yuan":38.00,"title":"商户名或消费标题","category":"餐饮","sub_category":"咖啡饮品","wallet":"微信支付"}`},
+分类只能从以下分类里选，不许自造二级分类名：%s。
+标题优先取商品名；商户名被打码（含 * 号）时不要用商户名做标题，改用商品名；标题里不要出现 * 号。
+返回格式：{"raw_text":"图片上的全部文字，按行排列","amount_yuan":38.00,"title":"商户名或消费标题","category":"餐饮","sub_category":"咖啡饮品","wallet":"微信支付"}`, s.allowedExpenseCategories(ctx, bookID))},
 					{"type": "image_url", "image_url": map[string]interface{}{"url": "data:image/jpeg;base64," + b64, "detail": "high"}},
 				},
 			},
@@ -824,9 +948,14 @@ func (s *AiService) tryLocalOCR(ctx context.Context, cfg *model.AiConfig, bookID
 
 	// 1. 大模型按来源提取（只发文字，不发图片）。
 	if strings.TrimSpace(cfg.APIKey) != "" && !strings.HasPrefix(cfg.APIKey, "sk-cat7-") && strings.TrimSpace(cfg.BaseURL) != "" {
-		if b, ok := s.extractBillFromOCRText(ctx, cfg, source, rawText); ok && b.AmountCents > 0 {
+		if b, ok := s.extractBillFromOCRText(ctx, cfg, source, rawText, s.allowedExpenseCategories(ctx, bookID)); ok && b.AmountCents > 0 {
 			b.RawText = rawText
 			b.Source = source
+			// 日期以 OCR 文字里的为准：模型常漏提日期（比如日期和时间粘在一起
+			// “2026-11-1810:57:56”），漏了就会退回今天，账单日期就错了。
+			if d := extractBillDate(rawText); d != "" {
+				b.Date = d
+			}
 			return b, true
 		}
 	}
@@ -839,7 +968,8 @@ func (s *AiService) tryLocalOCR(ctx context.Context, cfg *model.AiConfig, bookID
 
 // extractBillFromOCRText 让文本模型从 OCR 文字里按来源提取账单字段。
 // 只发文字，不发图片；金额取票面上的合计/实付，绝不累加商品行。
-func (s *AiService) extractBillFromOCRText(ctx context.Context, cfg *model.AiConfig, source, ocrText string) (*ocrBill, bool) {
+// allowedCats 是账本的支出分类允许列表，模型只能从里面选，不能自造二级分类名。
+func (s *AiService) extractBillFromOCRText(ctx context.Context, cfg *model.AiConfig, source, ocrText, allowedCats string) (*ocrBill, bool) {
 	sourceName := billSourceNames[source]
 	if sourceName == "" {
 		sourceName = billSourceNames["receipt"]
@@ -848,10 +978,12 @@ func (s *AiService) extractBillFromOCRText(ctx context.Context, cfg *model.AiCon
 请只根据 OCR 文字提取一笔账，严格返回 JSON：{"date":"2026-11-25","amount_yuan":38.50,"merchant":"星巴克咖啡","title":"星巴克咖啡","category":"餐饮","sub_category":"咖啡饮品","wallet":"微信支付"}
 规则：
 - 金额取票面上的合计/总计/实付/实付款/支付金额，绝不能把多个商品金额相加；金额为负数时取绝对值；如果 OCR 文字里没有可信金额，返回 {"amount_yuan":0}。
-- 日期取票面上的交易日期（YYYY-MM-DD）；没有则返回 ""。
+- 日期取票面上的交易日期（YYYY-MM-DD）；日期可能和时间粘在一起（如 2026-11-1810:57:56），取其中的日期部分；没有则返回 ""。
 - 商户取收款方/店铺名；没有则返回 ""。
+- 标题优先取商品名；商户名被打码（含 * 号）时不要用商户名做标题，改用商品名；标题里不要出现 * 号。
+- 分类只能从以下分类里选，不许自造二级分类名：%s。账单上的“账单分类”按以下映射：数码电器→购物/数码家电。
 - 钱包取付款方式原文，如 微信支付/支付宝/花呗/银行卡/现金；没有则返回 ""。
-- 只返回 JSON，不要解释。`, sourceName)
+- 只返回 JSON，不要解释。`, sourceName, allowedCats)
 	if len(ocrText) > 4000 {
 		ocrText = ocrText[:4000]
 	}
@@ -917,6 +1049,7 @@ func (s *AiService) extractBillFromOCRText(ctx context.Context, cfg *model.AiCon
 	if title == "" {
 		title = "账单消费"
 	}
+	title = cleanBillTitle(title)
 	return &ocrBill{
 		AmountCents: parseYuanTextToCents(fmt.Sprintf("%.2f", parsed.AmountYuan)),
 		Title:       title,

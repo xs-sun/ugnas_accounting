@@ -378,7 +378,7 @@ onMounted(() => {
     <div
       v-if="!store.authRequired"
       class="fixed bottom-0 left-0 right-0 z-20 px-4 pointer-events-none"
-      style="padding-bottom: max(10px, calc(env(safe-area-inset-bottom, 0px) + 2px))"
+      style="padding-bottom: max(12px, calc(env(safe-area-inset-bottom, 0px) - 13px))"
     >
       <div class="flex items-center gap-2.5 pointer-events-auto">
         <nav
