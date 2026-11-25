@@ -67,7 +67,9 @@ jobs:
             "https://ziglang.org/download/0.15.1/zig-x86_64-linux-0.15.1.tar.xz"
           tar -xJf /tmp/zig.tar.xz -C "$HOME/.local/zig"
           echo "$HOME/.local/zig/zig-x86_64-linux-0.15.1" >> "$GITHUB_PATH"
-          zig version
+          # 注意：$GITHUB_PATH 只对后面的步骤生效，本步骤里 PATH 还没有 zig，
+          # 所以这里必须用完整路径验版本（直接写 zig version 会 127）。
+          "$HOME/.local/zig/zig-x86_64-linux-0.15.1/zig" version
 
       - name: 安装 ugcli
         run: |
