@@ -36,6 +36,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      # 构建工具缓存：zig / ugcli / RapidOCR 每次发布都要从网上现下，
+      # 其中 zig（ziglang.org）和 ugcli（osswaf，约 1MB/s）都很慢，
+      # 而 Runner 每次都是全新机器，不缓存就等于每发一版重下一遍。
+      # 命中时下面三个“安装”步骤直接跳过，只留环境配置和校验。
+      # 升级任一工具版本时，同步改 key，否则会一直命中旧缓存。
+      - name: 缓存构建工具（zig / ugcli / RapidOCR）
+        id: cache-tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/zig
+            ~/.local/bin/ugcli
+            third_party/rapidocr
+          key: tools-zig-0.15.1-ugcli-v1.1.0.25-rapidocr-v6.7.1
+
       - name: 安装 pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -55,6 +70,7 @@ jobs:
           cache-dependency-path: backend/go.sum
 
       - name: 安装 zig
+        if: steps.cache-tools.outputs.cache-hit != 'true'
         run: |
           # build.sh 编原生启动器优先走 zig；Runner 上没有 zig 时会退到
           # Docker 拉镜像 + apt 装交叉编译器，又慢又容易失败。
@@ -66,12 +82,16 @@ jobs:
             -o /tmp/zig.tar.xz \
             "https://ziglang.org/download/0.15.1/zig-x86_64-linux-0.15.1.tar.xz"
           tar -xJf /tmp/zig.tar.xz -C "$HOME/.local/zig"
-          echo "$HOME/.local/zig/zig-x86_64-linux-0.15.1" >> "$GITHUB_PATH"
-          # 注意：$GITHUB_PATH 只对后面的步骤生效，本步骤里 PATH 还没有 zig，
+
+      - name: 配置 zig 环境
+        run: |
+          # $GITHUB_PATH 只对后面的步骤生效，本步骤里 PATH 还没有 zig，
           # 所以这里必须用完整路径验版本（直接写 zig version 会 127）。
+          echo "$HOME/.local/zig/zig-x86_64-linux-0.15.1" >> "$GITHUB_PATH"
           "$HOME/.local/zig/zig-x86_64-linux-0.15.1/zig" version
 
       - name: 安装 ugcli
+        if: steps.cache-tools.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$HOME/.local/bin"
           # osswaf 下载源较慢且偶有超时，加重试（单轮最多 5 分钟，总计不超过 15 分钟）
@@ -81,8 +101,12 @@ jobs:
             -o "$HOME/.local/bin/ugcli" \
             "https://osswaf.ugnas.com/pro/ugcli/download/ugcli-v1.1.0.25-linux-amd64"
           chmod +x "$HOME/.local/bin/ugcli"
+
+      - name: 配置 ugcli 环境
+        run: |
+          # 同上：PATH 本步骤内不生效，用完整路径校验。
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          ugcli --version
+          "$HOME/.local/bin/ugcli" --version
 
       - name: 确定版本号
         id: version
