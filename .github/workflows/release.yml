@@ -54,6 +54,21 @@ jobs:
           go-version: "1.26"
           cache-dependency-path: backend/go.sum
 
+      - name: 安装 zig
+        run: |
+          # build.sh 编原生启动器优先走 zig；Runner 上没有 zig 时会退到
+          # Docker 拉镜像 + apt 装交叉编译器，又慢又容易失败。
+          # 注意：zig 不能只拷二进制文件，它运行时要找同目录下的 lib/，
+          # 所以整个解压目录都要保留，并把该目录加进 PATH。
+          mkdir -p "$HOME/.local/zig"
+          curl -fSL --retry 3 --retry-all-errors --retry-delay 10 \
+            --connect-timeout 30 --max-time 300 --retry-max-time 900 \
+            -o /tmp/zig.tar.xz \
+            "https://ziglang.org/download/0.15.1/zig-x86_64-linux-0.15.1.tar.xz"
+          tar -xJf /tmp/zig.tar.xz -C "$HOME/.local/zig"
+          echo "$HOME/.local/zig/zig-x86_64-linux-0.15.1" >> "$GITHUB_PATH"
+          zig version
+
       - name: 安装 ugcli
         run: |
           mkdir -p "$HOME/.local/bin"
