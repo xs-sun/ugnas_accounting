@@ -122,6 +122,9 @@ type Category struct {
 	ParentID  *string `json:"parent_id"`
 	IsCustom  bool    `json:"is_custom"`
 	SortOrder int     `json:"sort_order"`
+	// UsageCount 是该分类近 90 天在本账本内的使用笔数（一级含其二级合计），
+	// 仅记账选分类时用于“常用在前”的动态排序，不参与分类管理里的手动顺序。
+	UsageCount int    `json:"usage_count,omitempty"`
 	CreatedAt string  `json:"created_at"`
 }
 
@@ -152,6 +155,12 @@ type Transaction struct {
 	CreatedBy       string   `json:"created_by"`
 	CreatedByName   string   `json:"created_by_name,omitempty"`
 	CreatedByAvatar string   `json:"created_by_avatar,omitempty"`
+	// MemberID 是这笔流水的归属成员（真实成员或虚拟成员），与创建人可以不同；
+	// 为空时等同于创建人（历史数据回填同样处理）。
+	MemberID     string `json:"member_id"`
+	MemberName   string `json:"member_name,omitempty"`
+	MemberAvatar string `json:"member_avatar,omitempty"`
+	MemberColor  string `json:"member_color,omitempty"`
 	CreatedAt       string   `json:"created_at"`
 	UpdatedAt       string   `json:"updated_at"`
 	Tags            []Tag    `json:"tags"`
@@ -240,8 +249,21 @@ type StatsReport struct {
 	Budget          int64               `json:"budget"`
 	BudgetUsed      int64               `json:"budget_used"`
 	Categories      []StatsCategoryItem `json:"categories"`
+	Members         []StatsMemberItem   `json:"members"`
 	DailySeries     []StatsSeriesItem   `json:"daily_series"`
 	TopTransactions []Transaction       `json:"top_transactions"`
+}
+
+// StatsMemberItem 是统计里按成员聚合的一行：该成员在所选周期/类型下的合计。
+type StatsMemberItem struct {
+	MemberID    string `json:"member_id"`
+	MemberName  string `json:"member_name"`
+	MemberAvatar string `json:"member_avatar"`
+	MemberColor string `json:"member_color"`
+	IsVirtual   bool   `json:"is_virtual"`
+	Amount      int64  `json:"amount"`
+	Percentage  int    `json:"percentage"`
+	Count       int    `json:"count"`
 }
 
 // RangeStats 是 Agent query_stats 工具的返回结构：任意起止日期区间的汇总。

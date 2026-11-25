@@ -286,7 +286,7 @@ func TestCommitSuishouji(t *testing.T) {
 		t.Errorf("failures = %+v, want row 4", res.Failures)
 	}
 	// 分类 fallback：火星开支匹配不上，应进预置「其他」，原分类名进备注。
-	items, total, err := svc.txRepo.ListTransactions(ctx, bookID, "", "", "", "", "", "", 10, 0)
+	items, total, err := svc.txRepo.ListTransactions(ctx, bookID, "", "", "", "", "", "", 10, 0, "")
 	if err != nil {
 		t.Fatalf("ListTransactions: %v", err)
 	}

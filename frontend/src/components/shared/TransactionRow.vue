@@ -26,12 +26,15 @@ const emit = defineEmits<{
 
 const store = useAppStore();
 
-const creatorInfo = computed(() => {
+const memberInfo = computed(() => {
   const members = store.activeBook?.members || [];
-  const matched = members.find((m) => m.user_id === props.tx.created_by);
-  const name = props.tx.created_by_name || matched?.user_name || '';
-  const avatar = props.tx.created_by_avatar || matched?.avatar || '';
-  const color = matched?.color || '#DE8A1E';
+  // 归属成员优先：member_id 为空（历史流水）时兜底为创建人。
+  const memberId = props.tx.member_id || props.tx.created_by;
+  const matched = members.find((m) => m.user_id === memberId);
+  const name =
+    props.tx.member_name || props.tx.created_by_name || matched?.user_name || '';
+  const avatar = props.tx.member_avatar || props.tx.created_by_avatar || matched?.avatar || '';
+  const color = props.tx.member_color || matched?.color || '#DE8A1E';
   return { name, avatar, color };
 });
 
@@ -97,23 +100,23 @@ const formattedAmount = computed(() => {
             {{ subtitleText }}
           </p>
           <span
-            v-if="creatorInfo.name"
+            v-if="memberInfo.name"
             class="inline-flex items-center gap-1 text-[10px] text-[#64748B] bg-[#F5F6F8] px-1.5 py-0.5 rounded-full shrink-0 max-w-[96px]"
           >
             <img
-              v-if="creatorInfo.avatar"
-              :src="resolveAvatarUrl(creatorInfo.avatar)"
-              :alt="creatorInfo.name"
+              v-if="memberInfo.avatar"
+              :src="resolveAvatarUrl(memberInfo.avatar)"
+              :alt="memberInfo.name"
               class="w-3.5 h-3.5 rounded-full object-cover shrink-0"
             />
             <span
               v-else
               class="w-3.5 h-3.5 rounded-full text-[8px] font-bold text-white flex items-center justify-center shrink-0"
-              :style="{ backgroundColor: creatorInfo.color }"
+              :style="{ backgroundColor: memberInfo.color }"
             >
-              {{ creatorInfo.name.slice(0, 1).toUpperCase() }}
+              {{ memberInfo.name.slice(0, 1).toUpperCase() }}
             </span>
-            <span class="truncate">{{ creatorInfo.name }}</span>
+            <span class="truncate">{{ memberInfo.name }}</span>
           </span>
         </div>
       </div>

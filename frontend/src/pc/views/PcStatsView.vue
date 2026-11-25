@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
 import { api } from '@/api/client';
-import { DEFAULT_MASCOT, MASCOT_FALLBACK } from '@/constants/avatars';
+import { DEFAULT_MASCOT, MASCOT_FALLBACK, resolveAvatarUrl } from '@/constants/avatars';
 import { useAppStore } from '@/stores/useAppStore';
 import { formatMoney } from '@/utils/format';
 import type { AiInsightsResponse, StatsPeriod, Transaction } from '@/types';
@@ -113,6 +113,19 @@ const activeTotal = computed<number>(() => {
 });
 
 const categoryRows = computed(() => store.stats?.categories || []);
+
+const memberRows = computed(() => store.stats?.members || []);
+const highlightedMemberId = ref<string | null>(null);
+
+const memberDonutItems = computed<DonutChartItem[]>(() =>
+  memberRows.value.map((m) => ({
+    category_id: m.member_id,
+    category_name: m.member_name,
+    category_color: m.member_color || '#DE8A1E',
+    amount: m.amount,
+    percentage: m.percentage,
+  }))
+);
 
 const donutItems = computed<DonutChartItem[]>(() =>
   categoryRows.value.map((c) => ({
@@ -351,6 +364,95 @@ function handleSelectBar(item: TrendBarItem) {
                 :style="{
                   width: `${Math.min(100, Math.max(2, Math.round(row.percentage || 0)))}%`,
                   backgroundColor: row.category_color || '#DE8A1E',
+                }"
+              />
+            </div>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 成员占比环形图与成员排行 -->
+    <section class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <div class="pc-card p-5 flex flex-col justify-between space-y-4">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-bold text-[#18181B]">
+            {{ store.statsType === 'expense' ? '支出' : '收入' }}成员占比
+          </h2>
+          <span class="text-xs font-bold tabular-nums text-[#18181B]">
+            合计 {{ formatMoney(activeTotal, { privacy: store.privacyHidden }) }}
+          </span>
+        </div>
+
+        <div v-if="memberDonutItems.length === 0" class="py-12 text-center text-xs text-[#94A3B8]">
+          该周期暂无{{ store.statsType === 'expense' ? '支出' : '收入' }}数据
+        </div>
+        <DonutChart
+          v-else
+          :items="memberDonutItems"
+          :total="activeTotal"
+          :center-label="store.statsType === 'expense' ? '周期支出' : '周期收入'"
+          :size="168"
+          :highlighted-id="highlightedMemberId"
+          :privacy="store.privacyHidden"
+          :max-legend-items="6"
+          @select="highlightedMemberId = $event"
+        />
+      </div>
+
+      <div class="pc-card p-5 space-y-3.5">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-bold text-[#18181B]">成员排行明细</h2>
+          <span class="text-[11px] text-[#94A3B8]">共 {{ memberRows.length }} 位成员</span>
+        </div>
+
+        <div v-if="memberRows.length === 0" class="py-12 text-center text-xs text-[#94A3B8]">
+          暂无成员排行数据
+        </div>
+        <div v-else class="space-y-3 max-h-64 overflow-y-auto thin-scroll pr-1">
+          <button
+            v-for="row in memberRows"
+            :key="row.member_id"
+            type="button"
+            class="w-full text-left space-y-1.5 p-2 -mx-1 rounded-xl transition"
+            :class="highlightedMemberId === row.member_id ? 'bg-[#FFF6E8]' : 'hover:bg-[#FAFBFD]'"
+            @click="highlightedMemberId = highlightedMemberId === row.member_id ? null : row.member_id"
+          >
+            <div class="flex items-center justify-between text-xs">
+              <div class="flex items-center gap-2 min-w-0">
+                <img
+                  v-if="row.member_avatar"
+                  :src="resolveAvatarUrl(row.member_avatar)"
+                  :alt="row.member_name"
+                  class="w-6 h-6 rounded-full object-cover bg-white border border-[#ECEEF2] shrink-0"
+                />
+                <span
+                  v-else
+                  class="w-6 h-6 rounded-full text-[10px] font-bold text-white flex items-center justify-center shrink-0"
+                  :style="{ backgroundColor: row.member_color || '#DE8A1E' }"
+                >
+                  {{ (row.member_name || '?').slice(0, 1) }}
+                </span>
+                <span class="font-semibold text-[#18181B] truncate">{{ row.member_name }}</span>
+                <span
+                  v-if="row.is_virtual"
+                  class="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-[#EEF2FF] text-[#4F46E5] shrink-0"
+                >
+                  虚拟成员
+                </span>
+                <span class="text-[#94A3B8] tabular-nums">{{ row.count }} 笔</span>
+                <span class="text-[#94A3B8] tabular-nums">{{ Math.round(row.percentage) }}%</span>
+              </div>
+              <span class="font-bold tabular-nums text-[#18181B] shrink-0">
+                {{ formatMoney(row.amount, { privacy: store.privacyHidden }) }}
+              </span>
+            </div>
+            <div class="h-2 rounded-full bg-[#F1F3F6] overflow-hidden">
+              <div
+                class="h-full rounded-full transition-all duration-300"
+                :style="{
+                  width: `${Math.min(100, Math.max(2, Math.round(row.percentage || 0)))}%`,
+                  backgroundColor: row.member_color || '#DE8A1E',
                 }"
               />
             </div>

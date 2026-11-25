@@ -25,8 +25,21 @@ const emit = defineEmits<{
 }>();
 
 const activeCategory = computed<CategoryTreeNode | undefined>(() => {
-  if (!props.tree.length) return undefined;
-  return props.tree.find((c) => c.id === props.modelValue) || props.tree[0];
+  if (!sortedTree.value.length) return undefined;
+  return sortedTree.value.find((c) => c.id === props.modelValue) || sortedTree.value[0];
+});
+
+// 动态排序：近 90 天常用在前（usage_count 大的置顶），没用过的按原 sort_order 沉底；
+// 只影响记账选分类的展示顺序，分类管理里的手动顺序不受影响。
+// 同一父级下的二级分类也按各自的使用次数排序。
+const sortedTree = computed<CategoryTreeNode[]>(() => {
+  const byUsage = (
+    a: { usage_count?: number; sort_order?: number },
+    b: { usage_count?: number; sort_order?: number }
+  ) => (b.usage_count ?? 0) - (a.usage_count ?? 0) || (a.sort_order ?? 0) - (b.sort_order ?? 0);
+  return [...props.tree]
+    .sort(byUsage)
+    .map((n) => ({ ...n, children: [...(n.children || [])].sort(byUsage) }));
 });
 
 const subCategories = computed(() => activeCategory.value?.children || []);
@@ -35,14 +48,14 @@ const gridClass = computed(() =>
   props.columns === 4 ? 'grid-cols-4' : 'grid-cols-5'
 );
 
-// 当树或类型切换导致当前选中分类无效时，自动归位到首个分类
+// 当树或类型切换导致当前选中分类无效时，自动归位到首个分类（常用在前的第一个）
 watch(
   () => [props.type, props.tree] as const,
   () => {
-    if (!props.tree.length) return;
-    const exists = props.tree.some((c) => c.id === props.modelValue);
+    if (!sortedTree.value.length) return;
+    const exists = sortedTree.value.some((c) => c.id === props.modelValue);
     if (!exists) {
-      const first = props.tree[0];
+      const first = sortedTree.value[0];
       const firstSub = first.children?.[0]?.name || '';
       emit('update:modelValue', first.id);
       emit('update:subCategory', firstSub);
@@ -75,9 +88,9 @@ function selectSubCategory(subName: string) {
 
 <template>
   <div class="space-y-2.5">
-    <div v-if="tree.length > 0" class="grid gap-y-2.5 gap-x-1" :class="gridClass">
+    <div v-if="sortedTree.length > 0" class="grid gap-y-2.5 gap-x-1" :class="gridClass">
       <button
-        v-for="cat in tree"
+        v-for="cat in sortedTree"
         :key="cat.id"
         type="button"
         class="flex flex-col items-center gap-1 py-1.5 px-0.5 rounded-2xl transition"
@@ -108,15 +121,16 @@ function selectSubCategory(subName: string) {
       </button>
     </div>
 
+    <!-- 二级分类：自动换行，最多显示两行，超出可上下滚动 -->
     <div
       v-if="subCategories.length > 0 && activeCategory"
-      class="pt-2.5 border-t border-[#F1F3F6] flex items-center gap-1.5 overflow-x-auto phone-scroll"
+      class="pt-2.5 border-t border-[#F1F3F6] flex flex-wrap items-center gap-1.5 overflow-y-auto phone-scroll max-h-[62px]"
     >
       <button
         v-for="sub in subCategories"
         :key="sub.id"
         type="button"
-        class="shrink-0 inline-flex items-center gap-1.5 text-[11px] pl-1.5 pr-2.5 py-1 rounded-full transition"
+        class="inline-flex items-center gap-1.5 text-[11px] pl-1.5 pr-2.5 py-1 rounded-full transition"
         :class="
           subCategory === sub.name
             ? 'bg-[#18181B] text-white font-semibold shadow-xs'

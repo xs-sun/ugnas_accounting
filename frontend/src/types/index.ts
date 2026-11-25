@@ -205,6 +205,7 @@ export interface Category {
   bg_color: string;
   is_custom: boolean;
   sort_order: number;
+  usage_count?: number;
   parent_id?: string | null;
   created_at: string;
 }
@@ -242,6 +243,11 @@ export interface Transaction {
   created_by: string;
   created_by_name?: string;
   created_by_avatar?: string;
+  // 归属成员（真实或虚拟成员），可与创建人不同；为空时后端默认等于创建人。
+  member_id?: string;
+  member_name?: string;
+  member_avatar?: string;
+  member_color?: string;
   created_at: string;
   updated_at: string;
   tags?: Tag[];
@@ -262,6 +268,7 @@ export interface TransactionListParams {
   category_id?: string;
   type?: string;
   search?: string;
+  member_id?: string;
   page?: number;
   page_size?: number;
 }
@@ -287,6 +294,7 @@ export interface CreateTransactionPayload {
   note?: string;
   include_budget?: boolean;
   reimburse?: boolean;
+  member_id?: string;
   tag_ids?: string[];
 }
 
@@ -452,8 +460,20 @@ export interface StatsReport {
   budget: number; // in cents
   budget_used: number; // in cents
   categories: CategoryReportItem[];
+  members: StatsMemberItem[];
   daily_series: StatsDailySeriesItem[];
   top_transactions: Transaction[];
+}
+
+export interface StatsMemberItem {
+  member_id: string;
+  member_name: string;
+  member_avatar: string;
+  member_color: string;
+  is_virtual: boolean;
+  amount: number; // in cents
+  percentage: number;
+  count: number;
 }
 
 // ==================== AI Features ====================
@@ -478,6 +498,8 @@ export interface AiDraft {
   wallet_id: string;
   wallet_name: string;
   date: string;
+  member_id?: string;
+  member_name?: string;
 }
 
 export interface AiChatResponse {

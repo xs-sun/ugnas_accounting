@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import { api } from '@/api/client';
-import { DEFAULT_MASCOT, MASCOT_FALLBACK } from '@/constants/avatars';
+import { DEFAULT_MASCOT, MASCOT_FALLBACK, resolveAvatarUrl } from '@/constants/avatars';
 import { useAppStore } from '@/stores/useAppStore';
 import { centsToYuan, yuanToCents, todayIso, nowTimeHm } from '@/utils/format';
 import type {
   AiChatMessage,
   AiDraft,
+  BookMember,
   Category,
   CategoryTreeNode,
   Transaction,
 } from '@/types';
 import CategoryBadge from './CategoryBadge.vue';
+import MemberPickerSheet from './MemberPickerSheet.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -62,6 +64,33 @@ const pickerOpen = ref<PickerKind | null>(null);
 const pickerDraft = ref<AiDraft | null>(null);
 const calYear = ref(0);
 const calMonth = ref(0); // 0-11
+// 草稿归属成员：默认是我，可点开换成其他真实/虚拟成员；入账时随草稿一起提交。
+const memberPickerDraft = ref<AiDraft | null>(null);
+const myMember = computed<BookMember | undefined>(() => {
+  const members = store.activeBook?.members || [];
+  return members.find((m) => m.is_me) || members[0];
+});
+
+function draftMember(draft: AiDraft): BookMember | undefined {
+  const members = store.activeBook?.members || [];
+  if (draft.member_id) return members.find((m) => m.user_id === draft.member_id);
+  return myMember.value;
+}
+
+function openMemberPicker(draft: AiDraft) {
+  memberPickerDraft.value = draft;
+}
+
+function onSelectDraftMember(userId: string) {
+  const d = memberPickerDraft.value;
+  if (d) {
+    d.member_id = userId;
+    const m = store.activeBook?.members?.find((x) => x.user_id === userId);
+    d.member_name = m?.user_name || '';
+  }
+  memberPickerDraft.value = null;
+}
+
 // OCR 查看器：点上传的图片，看原图 + 本地 OCR 认出的文字。
 const ocrViewer = ref<{ image: string; text: string; label: string } | null>(null);
 const voiceMode = ref<VoiceCaptureMode>('speech');
@@ -351,6 +380,7 @@ async function confirmRecordDraft(msg: AiChatMessage) {
       sub_category: d.sub_category || '',
       note: d.note || '',
       include_budget: true,
+      member_id: d.member_id || undefined,
     });
 
     msg.saved = true;
@@ -1432,6 +1462,49 @@ onBeforeUnmount(() => {
                     </button>
                   </div>
                 </div>
+
+                <div class="mt-2">
+                  <label class="block text-[10px] text-[#94A3B8] mb-1">归属成员</label>
+                  <button
+                    type="button"
+                    class="w-full text-[11px] font-semibold bg-[#F5F6F8] border border-[#E6E9EF] rounded-xl px-2.5 py-1.5 flex items-center justify-between gap-1 active:bg-[#FFF6E8]"
+                    @click="openMemberPicker(m.draft)"
+                  >
+                    <span class="flex items-center gap-1.5 min-w-0">
+                      <img
+                        v-if="draftMember(m.draft)?.avatar"
+                        :src="resolveAvatarUrl(draftMember(m.draft)?.avatar || '')"
+                        :alt="draftMember(m.draft)?.user_name"
+                        class="w-4 h-4 rounded-full object-cover shrink-0"
+                      />
+                      <span
+                        v-else
+                        class="w-4 h-4 rounded-full text-[8px] font-bold text-white flex items-center justify-center shrink-0"
+                        :style="{ backgroundColor: draftMember(m.draft)?.color || '#DE8A1E' }"
+                      >
+                        {{ (draftMember(m.draft)?.user_name || '?').slice(0, 1) }}
+                      </span>
+                      <span class="truncate">{{
+                        draftMember(m.draft)?.user_name || '选择成员'
+                      }}</span>
+                      <span
+                        v-if="draftMember(m.draft)?.is_virtual"
+                        class="text-[9px] font-medium px-1 py-0.5 rounded-full bg-[#EEF2FF] text-[#4F46E5] shrink-0"
+                      >
+                        虚拟成员
+                      </span>
+                    </span>
+                    <svg
+                      class="w-3.5 h-3.5 shrink-0 text-[#94A3B8]"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    >
+                      <path d="M6 9l6 6 6-6" />
+                    </svg>
+                  </button>
+                </div>
               </div>
 
               <!-- Footer Buttons -->
@@ -2052,4 +2125,13 @@ onBeforeUnmount(() => {
       </div>
     </div>
   </div>
+
+    <!-- 草稿归属成员：底部弹出层（与手动记账共用 MemberPickerSheet） -->
+    <MemberPickerSheet
+      :open="memberPickerDraft !== null"
+      :model-value="memberPickerDraft?.member_id || myMember?.user_id || ''"
+      :members="store.activeBook?.members || []"
+      @update:open="(v: boolean) => { if (!v) memberPickerDraft = null; }"
+      @update:model-value="onSelectDraftMember"
+    />
 </template>

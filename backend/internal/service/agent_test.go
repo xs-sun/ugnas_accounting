@@ -368,7 +368,7 @@ func TestAgentQueryMembers(t *testing.T) {
 func TestAgentCreateDraft(t *testing.T) {
 	aiSvc, bookA, _, _, _ := setupAgentTest(t)
 	ctx := context.Background()
-	before, total, err := aiSvc.txRepo.ListTransactions(ctx, bookA, "", "", "", "", "", "", 100, 0)
+	before, total, err := aiSvc.txRepo.ListTransactions(ctx, bookA, "", "", "", "", "", "", 100, 0, "")
 	if err != nil {
 		t.Fatalf("ListTransactions: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestAgentCreateDraft(t *testing.T) {
 	if draft.Amount != 1850 || draft.Type != "expense" || draft.CategoryName != "餐饮" {
 		t.Errorf("draft = %+v, want amount 1850 expense 餐饮", draft)
 	}
-	_, after, err := aiSvc.txRepo.ListTransactions(ctx, bookA, "", "", "", "", "", "", 100, 0)
+	_, after, err := aiSvc.txRepo.ListTransactions(ctx, bookA, "", "", "", "", "", "", 100, 0, "")
 	if err != nil {
 		t.Fatalf("ListTransactions: %v", err)
 	}

@@ -441,7 +441,7 @@ func (s *AiService) toolQueryTransactions(ctx context.Context, userID, currentBo
 	if limit > 100 {
 		limit = 100
 	}
-	items, total, err := s.txRepo.ListTransactions(ctx, bookID, walletID, categoryID, "", toolStr(args, "startDate"), toolStr(args, "endDate"), toolStr(args, "keyword"), limit, 0)
+	items, total, err := s.txRepo.ListTransactions(ctx, bookID, walletID, categoryID, "", toolStr(args, "startDate"), toolStr(args, "endDate"), toolStr(args, "keyword"), limit, 0, "")
 	if err != nil {
 		return nil, err
 	}

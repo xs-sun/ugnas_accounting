@@ -2,9 +2,9 @@
 import { ref, computed, watch } from 'vue';
 import { api } from '@/api/client';
 import { useAppStore } from '@/stores/useAppStore';
-import { DEFAULT_MASCOT, MASCOT_FALLBACK } from '@/constants/avatars';
+import { DEFAULT_MASCOT, MASCOT_FALLBACK, resolveAvatarUrl } from '@/constants/avatars';
 import { formatMoney } from '@/utils/format';
-import type { AiInsightsResponse, CategoryReportItem, StatsPeriod, Transaction } from '@/types';
+import type { AiInsightsResponse, CategoryReportItem, StatsMemberItem, StatsPeriod, Transaction } from '@/types';
 import DonutChart, { type DonutChartItem } from '@/components/shared/DonutChart.vue';
 import TrendBarChart, { type TrendBarItem } from '@/components/shared/TrendBarChart.vue';
 import CategoryBadge from '@/components/shared/CategoryBadge.vue';
@@ -17,6 +17,7 @@ const emit = defineEmits<{
 const store = useAppStore();
 
 const highlightedCatId = ref<string | null>(null);
+const highlightedMemberId = ref<string | null>(null);
 const selectedBarKey = ref<string | null>(null);
 const loadingStats = ref(false);
 
@@ -74,6 +75,11 @@ const dailyAverage = computed(() => {
 
 const categoryBreakdown = computed<CategoryReportItem[]>(() => {
   const list = statsData.value?.categories || [];
+  return [...list].sort((a, b) => (b.amount || 0) - (a.amount || 0));
+});
+
+const memberBreakdown = computed<StatsMemberItem[]>(() => {
+  const list = statsData.value?.members || [];
   return [...list].sort((a, b) => (b.amount || 0) - (a.amount || 0));
 });
 
@@ -193,6 +199,10 @@ function onSelectCategory(catId: string | null) {
 
 function toggleCategoryFilter(catId: string) {
   highlightedCatId.value = highlightedCatId.value === catId ? null : catId;
+}
+
+function toggleMemberHighlight(memberId: string) {
+  highlightedMemberId.value = highlightedMemberId.value === memberId ? null : memberId;
 }
 
 function onSelectBar(item: TrendBarItem) {
@@ -459,6 +469,85 @@ watch(
           </button>
         </div>
       </template>
+    </section>
+
+    <!-- 成员构成：按归属成员聚合（与分类构成同一口径） -->
+    <section class="app-card p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-bold text-[#18181B]">成员构成</h3>
+        <span class="text-[11px] text-[#94A3B8]">
+          {{ store.statsType === 'expense' ? '谁花的钱' : '谁挣的钱' }}
+        </span>
+      </div>
+
+      <p
+        v-if="memberBreakdown.length === 0"
+        class="text-center text-xs text-[#94A3B8] py-8"
+      >
+        该周期暂无{{ store.statsType === 'expense' ? '支出' : '收入' }}数据
+      </p>
+
+      <div v-else class="space-y-2.5">
+        <button
+          v-for="m in memberBreakdown"
+          :key="m.member_id"
+          type="button"
+          class="w-full text-left p-2 -mx-2 rounded-xl transition"
+          :class="
+            highlightedMemberId === m.member_id
+              ? 'bg-[#FFF6E8]/70 ring-1 ring-[#DE8A1E]/40'
+              : 'hover:bg-[#F8F9FB]'
+          "
+          @click="toggleMemberHighlight(m.member_id)"
+        >
+          <div class="flex items-center justify-between gap-2 mb-1.5">
+            <div class="flex items-center gap-2 min-w-0">
+              <img
+                v-if="m.member_avatar"
+                :src="resolveAvatarUrl(m.member_avatar)"
+                :alt="m.member_name"
+                class="w-6 h-6 rounded-full object-cover bg-white border border-[#ECEEF2] shrink-0"
+              />
+              <span
+                v-else
+                class="w-6 h-6 rounded-full text-[10px] font-bold text-white flex items-center justify-center shrink-0"
+                :style="{ backgroundColor: m.member_color || '#DE8A1E' }"
+              >
+                {{ (m.member_name || '?').slice(0, 1) }}
+              </span>
+              <span class="text-xs font-semibold text-[#18181B] truncate">
+                {{ m.member_name }}
+              </span>
+              <span
+                v-if="m.is_virtual"
+                class="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-[#EEF2FF] text-[#4F46E5] shrink-0"
+              >
+                虚拟成员
+              </span>
+              <span class="text-[10px] text-[#94A3B8] shrink-0">
+                {{ m.count }} 笔
+              </span>
+            </div>
+            <div class="flex items-center gap-2 shrink-0 tabular-nums">
+              <span class="text-[11px] text-[#64748B]">
+                {{ Math.round(m.percentage || 0) }}%
+              </span>
+              <span class="text-xs font-bold text-[#18181B]">
+                {{ formatMoney(m.amount, { privacy: store.privacyHidden }) }}
+              </span>
+            </div>
+          </div>
+          <div class="h-1.5 rounded-full bg-[#ECEEF2] overflow-hidden">
+            <div
+              class="h-full rounded-full transition-all duration-300"
+              :style="{
+                width: `${Math.min(100, Math.max(2, Math.round(m.percentage || 0)))}%`,
+                backgroundColor: m.member_color || '#DE8A1E',
+              }"
+            />
+          </div>
+        </button>
+      </div>
     </section>
 
     <!-- 趋势柱状图 -->

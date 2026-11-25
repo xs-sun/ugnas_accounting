@@ -67,6 +67,7 @@ func (h *TransactionHandler) ListTransactions(w http.ResponseWriter, r *http.Req
 	categoryID := q.Get("category_id")
 	txType := q.Get("type")
 	search := q.Get("search")
+	memberID := q.Get("member_id")
 	if search == "" {
 		search = q.Get("keyword")
 	}
@@ -100,7 +101,7 @@ func (h *TransactionHandler) ListTransactions(w http.ResponseWriter, r *http.Req
 	}
 
 	offset := (page - 1) * pageSize
-	items, total, err := h.txRepo.ListTransactions(r.Context(), bookID, walletID, categoryID, txType, startDate, endDate, search, pageSize, offset)
+	items, total, err := h.txRepo.ListTransactions(r.Context(), bookID, walletID, categoryID, txType, startDate, endDate, search, pageSize, offset, memberID)
 	if err != nil {
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -143,6 +144,8 @@ func (h *TransactionHandler) CreateTransaction(w http.ResponseWriter, r *http.Re
 		Note          string   `json:"note"`
 		IncludeBudget *bool    `json:"include_budget"`
 		Reimburse     bool     `json:"reimburse"`
+		// MemberID 归属成员（真实或虚拟成员）；为空时默认是创建人本人。
+		MemberID      string   `json:"member_id"`
 		Tags          []string `json:"tags"`
 		TagIDs        []string `json:"tag_ids"`
 	}
@@ -164,6 +167,15 @@ func (h *TransactionHandler) CreateTransaction(w http.ResponseWriter, r *http.Re
 		role, _ := h.bookRepo.GetMemberRole(r.Context(), req.BookID, uCtx.ID)
 		if role == "viewer" {
 			sendError(w, http.StatusForbidden, "viewers cannot create transactions")
+			return
+		}
+	}
+
+	// 归属成员必须是本账本的成员（真实成员或虚拟成员），否则拒绝；
+	// 账本所有者即使不在成员表里也算成员（GetMemberRole 有 owner 兜底）。
+	if req.MemberID != "" && req.BookID != "" {
+		if _, err := h.bookRepo.GetMemberRole(r.Context(), req.BookID, req.MemberID); err != nil {
+			sendError(w, http.StatusBadRequest, "invalid member_id: not a member of this book")
 			return
 		}
 	}
@@ -221,6 +233,7 @@ func (h *TransactionHandler) CreateTransaction(w http.ResponseWriter, r *http.Re
 		Note:          req.Note,
 		IncludeBudget: incBudget,
 		Reimburse:     req.Reimburse,
+		MemberID:      req.MemberID,
 		CreatedBy:     uCtx.ID,
 	}
 
@@ -267,6 +280,16 @@ func (h *TransactionHandler) UpdateTransaction(w http.ResponseWriter, r *http.Re
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		sendError(w, http.StatusBadRequest, "invalid json")
 		return
+	}
+
+	// 改归属成员时同样校验：必须是本账本的成员。
+	if mid, ok := body["member_id"]; ok {
+		if s, ok := mid.(string); ok && s != "" {
+			if _, err := h.bookRepo.GetMemberRole(r.Context(), old.BookID, s); err != nil {
+				sendError(w, http.StatusBadRequest, "invalid member_id: not a member of this book")
+				return
+			}
+		}
 	}
 
 	updated, err := h.txRepo.UpdateTransaction(r.Context(), txID, body)

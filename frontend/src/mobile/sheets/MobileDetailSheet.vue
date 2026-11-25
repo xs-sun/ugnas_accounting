@@ -8,7 +8,9 @@ import BottomSheet from '../components/BottomSheet.vue';
 import CategoryBadge from '@/components/shared/CategoryBadge.vue';
 import CategoryPicker from '@/components/shared/CategoryPicker.vue';
 import CustomDropdown, { type DropdownOption } from '@/components/shared/CustomDropdown.vue';
+import MemberPickerSheet from '@/components/shared/MemberPickerSheet.vue';
 import ToggleSwitch from '@/components/shared/ToggleSwitch.vue';
+import { resolveAvatarUrl } from '@/constants/avatars';
 
 const props = defineProps<{
   open: boolean;
@@ -35,6 +37,18 @@ const txTime = ref(nowTimeHm());
 const note = ref('');
 const includeBudget = ref(true);
 const reimburse = ref(false);
+const memberId = ref('');
+const memberPickerOpen = ref(false);
+const bookMembers = computed(() => store.activeBook?.members || []);
+const selectedMember = computed(() => {
+  const members = bookMembers.value;
+  if (!members.length) return undefined;
+  return (
+    members.find((m) => m.user_id === memberId.value) ||
+    members.find((m) => m.is_me) ||
+    members[0]
+  );
+});
 
 const savingTx = ref(false);
 const deletingTx = ref(false);
@@ -75,6 +89,7 @@ function hydrateTransactionForm(tx: Transaction | null) {
   note.value = tx.note || '';
   includeBudget.value = tx.include_budget ?? true;
   reimburse.value = Boolean(tx.reimburse);
+  memberId.value = tx.member_id || tx.created_by || '';
 }
 
 function hydrateBudgetForm() {
@@ -145,6 +160,7 @@ async function handleSaveTransaction() {
       note: note.value.trim(),
       include_budget: txType.value === 'expense' ? includeBudget.value : false,
       reimburse: txType.value === 'expense' ? reimburse.value : false,
+      member_id: memberId.value || undefined,
     });
     store.showToast(`已更新「${trimmedTitle}」`, 'success');
     closeSheet();
@@ -233,7 +249,11 @@ async function handleSaveBudget() {
             <p class="text-[11px] text-[#64748B] truncate">
               {{ activeCategory?.name || transaction?.category_name || '未分类'
               }}{{ subCategory ? ` · ${subCategory}` : ''
-              }}{{ transaction?.created_by_name ? ` · 记录人 ${transaction.created_by_name}` : '' }}
+              }}{{
+                (transaction?.member_name || transaction?.created_by_name)
+                  ? ` · 成员 ${transaction?.member_name || transaction?.created_by_name}`
+                  : ''
+              }}
             </p>
           </div>
         </div>
@@ -368,6 +388,42 @@ async function handleSaveBudget() {
             size="sm"
           />
         </div>
+        <div class="px-3.5 py-2.5 flex items-center justify-between gap-3">
+          <span class="text-[#64748B] shrink-0">归属成员</span>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 pl-1 pr-2 py-1 rounded-full bg-[#F5F6F8] hover:bg-[#ECEEF2] transition shrink-0 max-w-[170px]"
+            @click="memberPickerOpen = true"
+          >
+            <img
+              v-if="selectedMember?.avatar"
+              :src="resolveAvatarUrl(selectedMember.avatar)"
+              :alt="selectedMember.user_name"
+              class="w-5 h-5 rounded-full object-cover bg-white border border-[#ECEEF2] shrink-0"
+            />
+            <span
+              v-else
+              class="w-5 h-5 rounded-full text-[9px] font-bold text-white flex items-center justify-center shrink-0"
+              :style="{ backgroundColor: selectedMember?.color || '#DE8A1E' }"
+            >
+              {{ (selectedMember?.user_name || '?').slice(0, 1) }}
+            </span>
+            <span class="text-xs font-semibold text-[#18181B] truncate">
+              {{ selectedMember?.user_name || '选择成员' }}
+            </span>
+            <svg
+              class="w-3 h-3 text-[#94A3B8] shrink-0"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+        </div>
         <div class="px-3.5 py-2.5 flex items-center justify-between gap-2">
           <span class="text-[#64748B] shrink-0">备注</span>
           <input
@@ -484,5 +540,11 @@ async function handleSaveBudget() {
         </button>
       </div>
     </template>
+
+    <MemberPickerSheet
+      v-model:open="memberPickerOpen"
+      v-model="memberId"
+      :members="bookMembers"
+    />
   </BottomSheet>
 </template>

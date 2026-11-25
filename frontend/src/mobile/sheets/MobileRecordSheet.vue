@@ -8,7 +8,9 @@ import BottomSheet from '../components/BottomSheet.vue';
 import MobileKeypad from '../components/MobileKeypad.vue';
 import AiChatPanel from '@/components/shared/AiChatPanel.vue';
 import CategoryPicker from '@/components/shared/CategoryPicker.vue';
+import MemberPickerSheet from '@/components/shared/MemberPickerSheet.vue';
 import ToggleSwitch from '@/components/shared/ToggleSwitch.vue';
+import { resolveAvatarUrl } from '@/constants/avatars';
 
 const props = withDefaults(
   defineProps<{
@@ -49,6 +51,20 @@ const includeBudget = ref(true);
 const reimburse = ref(false);
 const showMoreMeta = ref(false);
 const submitting = ref(false);
+
+// 归属成员：默认是我（每次打开记账页都回到我），可点右上角切换为其他真实/虚拟成员。
+const memberId = ref('');
+const memberPickerOpen = ref(false);
+const bookMembers = computed(() => store.activeBook?.members || []);
+const selectedMember = computed(() => {
+  const members = bookMembers.value;
+  if (!members.length) return undefined;
+  return (
+    members.find((m) => m.user_id === memberId.value) ||
+    members.find((m) => m.is_me) ||
+    members[0]
+  );
+});
 
 // 水平滑动切换手势状态
 const isSwiping = ref(false);
@@ -108,6 +124,11 @@ function resetManualFormForOpen() {
   ) {
     selectedWalletId.value = store.activeWallets[0]?.id || '';
   }
+
+  // 归属成员每次打开都默认回到我，避免上一次替别人记的账被误沿用。
+  const members = store.activeBook?.members || [];
+  memberId.value =
+    members.find((m) => m.is_me)?.user_id || members[0]?.user_id || '';
 
   const tree = categoryTree.value;
   if (tree.length > 0 && !tree.some((c) => c.id === categoryId.value)) {
@@ -303,6 +324,7 @@ async function handleManualSubmit(keepOpen: boolean) {
       note: trimmedNote,
       include_budget: manualType.value === 'expense' ? includeBudget.value : false,
       reimburse: manualType.value === 'expense' ? reimburse.value : false,
+      member_id: memberId.value || undefined,
     });
 
     const formatted = formatMoney(cents, {
@@ -338,6 +360,7 @@ function onAiViewTx(txId: string) {
   <BottomSheet
     :open="open"
     :multi-detent="true"
+    initial-detent="fullscreen"
     max-height-class="max-h-[92dvh]"
     bg-class="bg-[#F8F9FB]"
     z-index-class="z-40"
@@ -456,9 +479,40 @@ function onAiViewTx(txId: string) {
               收入
             </button>
           </div>
-          <span class="text-[11px] font-medium text-[#64748B] truncate max-w-[160px]">
-            {{ store.activeBook?.name || '默认账本' }}
-          </span>
+          <!-- 归属成员：顶替原来的账本名位置（账本在顶栏切换，这里不需要重复显示） -->
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 pl-1 pr-2 py-1 rounded-full bg-[#F5F6F8] hover:bg-[#ECEEF2] transition shrink-0 max-w-[170px]"
+            @click="memberPickerOpen = true"
+          >
+            <img
+              v-if="selectedMember?.avatar"
+              :src="resolveAvatarUrl(selectedMember.avatar)"
+              :alt="selectedMember.user_name"
+              class="w-5 h-5 rounded-full object-cover bg-white border border-[#ECEEF2] shrink-0"
+            />
+            <span
+              v-else
+              class="w-5 h-5 rounded-full text-[9px] font-bold text-white flex items-center justify-center shrink-0"
+              :style="{ backgroundColor: selectedMember?.color || '#DE8A1E' }"
+            >
+              {{ (selectedMember?.user_name || '?').slice(0, 1) }}
+            </span>
+            <span class="text-[11px] font-semibold text-[#18181B] truncate">
+              {{ selectedMember?.user_name || '选择成员' }}
+            </span>
+            <svg
+              class="w-3 h-3 text-[#94A3B8] shrink-0"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
         </div>
 
         <!-- 分类选择 + 可展开更多日期时间设置 -->
@@ -598,5 +652,11 @@ function onAiViewTx(txId: string) {
         </MobileKeypad>
       </div>
     </div>
+
+    <MemberPickerSheet
+      v-model:open="memberPickerOpen"
+      v-model="memberId"
+      :members="bookMembers"
+    />
   </BottomSheet>
 </template>

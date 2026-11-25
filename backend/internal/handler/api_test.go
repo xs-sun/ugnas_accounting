@@ -1566,3 +1566,144 @@ func TestAiCapabilitiesAndTranscribeAudio(t *testing.T) {
 		t.Fatalf("unexpected polish text: %q", pTxt)
 	}
 }
+
+func TestTransactionMemberFieldAndStats(t *testing.T) {
+	env := setupTestEnv(t)
+	ownerH := map[string]string{"Ugreen-User-ID": "u_owner", "Ugreen-User-Name": "小禾", "Ugreen-User-Type": "admin"}
+
+	// Auto-seeded book + preset wallet/category
+	rr, resp := doJSONReq(t, env.handler, http.MethodGet, "/api/v1/books", nil, ownerH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list books failed: %d", rr.Code)
+	}
+	bookID := resp["data"].([]interface{})[0].(map[string]interface{})["id"].(string)
+	wallets, _ := env.walletRepo.ListWallets(context.Background(), bookID, false)
+	cats, _ := env.catRepo.ListCategories(context.Background(), bookID, "expense")
+	var coffeeSubID, foodCatID string
+	for _, c := range cats {
+		if c.ParentID == nil && c.Name == "餐饮" {
+			foodCatID = c.ID
+		}
+		if c.ParentID != nil && c.Name == "咖啡饮品" {
+			coffeeSubID = c.ID
+		}
+	}
+	if coffeeSubID == "" || foodCatID == "" {
+		t.Fatalf("missing preset categories")
+	}
+
+	// Add a virtual member （家里猫咪）
+	rr, resp = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/books/"+bookID+"/virtual-members", map[string]string{
+		"name":  "家里猫咪",
+		"color": "#DE8A1E",
+	}, ownerH)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("add virtual member failed: %d %s", rr.Code, rr.Body.String())
+	}
+	virtID := resp["data"].(map[string]interface{})["user_id"].(string)
+	if !strings.HasPrefix(virtID, "virt_") {
+		t.Fatalf("expected virt_ member id, got %q", virtID)
+	}
+
+	today := time.Now().Format("2006-01-02")
+	createTx := func(memberID string, amount int, title string) (int, map[string]interface{}) {
+		body := map[string]interface{}{
+			"book_id": bookID, "type": "expense", "amount": amount, "date": today,
+			"wallet_id": wallets[0].ID, "category_id": coffeeSubID, "title": title,
+		}
+		if memberID != "" {
+			body["member_id"] = memberID
+		}
+		rr, resp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/transactions", body, ownerH)
+		return rr.Code, resp
+	}
+
+	// 1. Owner creates a tx for the virtual member: member fields must follow member_id, not creator.
+	code, resp := createTx(virtID, 3850, "猫咪的咖啡")
+	if code != http.StatusCreated {
+		t.Fatalf("create tx for virtual member failed: %d %s", code, rr.Body.String())
+	}
+	txVirt := resp["data"].(map[string]interface{})
+	if txVirt["member_id"] != virtID || txVirt["member_name"] != "家里猫咪" {
+		t.Fatalf("expected member=家里猫咪(%s), got %+v", virtID, txVirt)
+	}
+	if txVirt["created_by"] != "u_owner" {
+		t.Fatalf("created_by must stay the creator, got %v", txVirt["created_by"])
+	}
+	virtTxID := txVirt["id"].(string)
+
+	// 2. No member_id -> defaults to the creator.
+	code, resp = createTx("", 10000, "我的午饭")
+	if code != http.StatusCreated {
+		t.Fatalf("create tx without member failed: %d", code)
+	}
+	txMine := resp["data"].(map[string]interface{})
+	if txMine["member_id"] != "u_owner" || txMine["member_name"] != "小禾" {
+		t.Fatalf("expected default member=小禾(u_owner), got %+v", txMine)
+	}
+
+	// 3. member_id of a non-member must be rejected.
+	code, _ = createTx("u_stranger", 100, "陌生人")
+	if code != http.StatusBadRequest {
+		t.Fatalf("non-member member_id must return 400, got %d", code)
+	}
+
+	// 4. List filter by member_id returns only that member's tx.
+	rr, resp = doJSONReq(t, env.handler, http.MethodGet,
+		fmt.Sprintf("/api/v1/transactions?book_id=%s&member_id=%s", bookID, virtID), nil, ownerH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list by member failed: %d", rr.Code)
+	}
+	items := resp["data"].(map[string]interface{})["items"].([]interface{})
+	if len(items) != 1 || items[0].(map[string]interface{})["id"] != virtTxID {
+		t.Fatalf("expected exactly the virtual member tx, got %+v", items)
+	}
+
+	// 5. Stats report groups by member (same month, expense).
+	now := time.Now()
+	rr, resp = doJSONReq(t, env.handler, http.MethodGet,
+		fmt.Sprintf("/api/v1/reports/stats?book_id=%s&period=month&type=expense&year=%d&month=%d", bookID, now.Year(), int(now.Month())), nil, ownerH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get stats failed: %d", rr.Code)
+	}
+	stats := resp["data"].(map[string]interface{})
+	members := stats["members"].([]interface{})
+	if len(members) != 2 {
+		t.Fatalf("expected 2 members in stats, got %+v", members)
+	}
+	byID := map[string]map[string]interface{}{}
+	for _, m := range members {
+		mm := m.(map[string]interface{})
+		byID[mm["member_id"].(string)] = mm
+	}
+	if int64(byID[virtID]["amount"].(float64)) != 3850 || byID[virtID]["member_name"] != "家里猫咪" {
+		t.Fatalf("virtual member stats wrong: %+v", byID[virtID])
+	}
+	if int64(byID["u_owner"]["amount"].(float64)) != 10000 {
+		t.Fatalf("owner stats wrong: %+v", byID["u_owner"])
+	}
+	if int(byID[virtID]["percentage"].(float64)) != 27 || int(byID["u_owner"]["percentage"].(float64)) != 72 {
+		t.Fatalf("unexpected member percentages: %+v", members)
+	}
+
+	// 6. Update member_id moves the tx to the owner.
+	rr, resp = doJSONReq(t, env.handler, http.MethodPut, "/api/v1/transactions/"+virtTxID,
+		map[string]interface{}{"member_id": "u_owner"}, ownerH)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update member failed: %d %s", rr.Code, rr.Body.String())
+	}
+	updated := resp["data"].(map[string]interface{})
+	if updated["member_id"] != "u_owner" || updated["member_name"] != "小禾" {
+		t.Fatalf("expected member moved to owner, got %+v", updated)
+	}
+
+	// 7. Category usage counts: 咖啡饮品 used twice, 餐饮 roll-up is 2.
+	cats, _ = env.catRepo.ListCategories(context.Background(), bookID, "expense")
+	usage := map[string]int{}
+	for _, c := range cats {
+		usage[c.ID] = c.UsageCount
+	}
+	if usage[coffeeSubID] != 2 || usage[foodCatID] != 2 {
+		t.Fatalf("expected usage 2/2 for 咖啡饮品/餐饮， got %d/%d", usage[coffeeSubID], usage[foodCatID])
+	}
+}

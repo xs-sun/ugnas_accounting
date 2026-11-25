@@ -288,12 +288,18 @@ func InitDB(dataDir string) (*DB, error) {
 		{"transactions", "tx_time", "TEXT DEFAULT ''"},
 		{"transactions", "include_budget", "INTEGER NOT NULL DEFAULT 1"},
 		{"transactions", "reimburse", "INTEGER NOT NULL DEFAULT 0"},
+		{"transactions", "member_id", "TEXT DEFAULT ''"},
 	}
 
 	for _, m := range columnMigrations {
 		if err := ensureColumn(db, m.table, m.col, m.ddl); err != nil {
 			return nil, fmt.Errorf("column migration %s.%s failed: %w", m.table, m.col, err)
 		}
+	}
+
+	// 历史流水回填：member_id 为空时默认归属创建人（与读时 COALESCE 兜底一致）。
+	if _, err := db.Exec(`UPDATE transactions SET member_id = created_by WHERE COALESCE(member_id, '') = ''`); err != nil {
+		return nil, fmt.Errorf("backfill transactions.member_id failed: %w", err)
 	}
 
 	// New tables for v0.2.0

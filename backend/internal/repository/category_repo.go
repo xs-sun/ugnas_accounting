@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 
 	"com.xsguyu.accounting/backend/internal/model"
 	"github.com/google/uuid"
@@ -110,7 +111,53 @@ func (r *CategoryRepo) ListCategories(ctx context.Context, bookID string, catTyp
 		c.IsCustom = isCustomInt == 1
 		categories = append(categories, c)
 	}
-	return categories, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	// 记账选分类用的使用次数：近 90 天内本账本同类型流水按分类计数，
+	// 一级分类含其二级合计；失败时静默为 0，不影响分类列表本身。
+	r.attachUsageCounts(ctx, categories, bookID, catType)
+	return categories, nil
+}
+
+// attachUsageCounts 统计近 90 天各分类的使用笔数并写回 UsageCount。
+func (r *CategoryRepo) attachUsageCounts(ctx context.Context, categories []model.Category, bookID, catType string) {
+	if bookID == "" || len(categories) == 0 {
+		return
+	}
+	cutoff := time.Now().AddDate(0, 0, -90).Format("2006-01-02")
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT category_id, COUNT(*)
+		FROM transactions
+		WHERE book_id = ? AND type = ? AND date >= ? AND category_id IS NOT NULL AND category_id <> ''
+		GROUP BY category_id
+	`, bookID, catType, cutoff)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	direct := map[string]int{}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err == nil {
+			direct[id] = n
+		}
+	}
+	for i := range categories {
+		c := &categories[i]
+		c.UsageCount = direct[c.ID]
+		// 一级分类的使用次数含其全部二级合计。
+		if c.ParentID == nil {
+			for j := range categories {
+				child := &categories[j]
+				if child.ParentID != nil && *child.ParentID == c.ID {
+					c.UsageCount += direct[child.ID]
+				}
+			}
+		}
+	}
 }
 
 func (r *CategoryRepo) UpdateCategory(ctx context.Context, c *model.Category) error {

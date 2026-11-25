@@ -49,6 +49,7 @@ const form = reactive({
   categoryId: '',
   subCategory: '',
   walletId: '',
+  memberId: '',
   date: todayIso(),
   txTime: nowTimeHm(),
   note: '',
@@ -74,6 +75,20 @@ const walletOptions = computed<DropdownOption[]>(() =>
   }))
 );
 
+// 归属成员：默认是我，可改成其他真实/虚拟成员。
+const memberOptions = computed<DropdownOption[]>(() =>
+  (store.activeBook?.members || []).map((m) => ({
+    value: m.user_id,
+    label: m.user_name + (m.is_me ? '（我）' : m.is_virtual ? '（虚拟成员）' : ''),
+    dot: m.color || '#DE8A1E',
+  }))
+);
+
+const defaultMemberId = computed(() => {
+  const members = store.activeBook?.members || [];
+  return members.find((m) => m.is_me)?.user_id || members[0]?.user_id || '';
+});
+
 function resetManualForm() {
   errorMsg.value = '';
   confirmDelete.value = false;
@@ -85,6 +100,7 @@ function resetManualForm() {
     form.categoryId = tx.category_id || '';
     form.subCategory = tx.sub_category || '';
     form.walletId = tx.wallet_id || store.activeWallets[0]?.id || '';
+    form.memberId = tx.member_id || tx.created_by || defaultMemberId.value;
     form.date = tx.date || todayIso();
     form.txTime = tx.tx_time || nowTimeHm();
     form.note = tx.note || '';
@@ -100,6 +116,7 @@ function resetManualForm() {
   form.categoryId = firstCat?.id || '';
   form.subCategory = firstCat?.children?.[0]?.name || '';
   form.walletId = store.activeWallets[0]?.id || '';
+  form.memberId = defaultMemberId.value;
   form.date = props.defaultDate || todayIso();
   form.txTime = nowTimeHm();
   form.note = '';
@@ -229,6 +246,7 @@ async function handleSubmitManual() {
         note: form.note.trim(),
         include_budget: form.includeBudget,
         reimburse: form.reimburse,
+        member_id: form.memberId || undefined,
       });
       store.showToast(`已保存「${savedTx.title || fallbackTitle}」`, 'success');
     } else {
@@ -245,6 +263,7 @@ async function handleSubmitManual() {
         note: form.note.trim(),
         include_budget: form.includeBudget,
         reimburse: form.reimburse,
+        member_id: form.memberId || undefined,
       });
       store.showToast(
         `已记录「${savedTx.title || fallbackTitle}」¥${centsToYuan(savedTx.amount).toFixed(2)}`,
@@ -514,7 +533,7 @@ async function handleDelete() {
 
             <!-- 日期、时间与支付账户 -->
             <div class="bg-white border border-[#EAECEF] rounded-2xl p-4 space-y-3">
-              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                 <div>
                   <label class="block text-[11px] font-semibold text-[#64748B] mb-1">日期</label>
                   <input
@@ -538,6 +557,14 @@ async function handleDelete() {
                     v-model="form.walletId"
                     :options="walletOptions"
                     placeholder="选择账户"
+                  />
+                </div>
+                <div>
+                  <label class="block text-[11px] font-semibold text-[#64748B] mb-1">归属成员</label>
+                  <CustomDropdown
+                    v-model="form.memberId"
+                    :options="memberOptions"
+                    placeholder="选择成员"
                   />
                 </div>
               </div>

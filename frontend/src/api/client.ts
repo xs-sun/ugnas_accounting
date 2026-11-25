@@ -671,6 +671,7 @@ export const api = {
     if (params.category_id) sp.set('category_id', params.category_id);
     if (params.type) sp.set('type', params.type);
     if (params.search) sp.set('search', params.search);
+    if (params.member_id) sp.set('member_id', params.member_id);
     if (params.page) sp.set('page', params.page.toString());
     if (params.page_size) sp.set('page_size', params.page_size.toString());
 

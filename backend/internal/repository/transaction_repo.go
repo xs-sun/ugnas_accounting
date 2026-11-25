@@ -21,6 +21,19 @@ func NewTransactionRepo(db *DB) *TransactionRepo {
 	return &TransactionRepo{db: db}
 }
 
+// 流水归属成员的通用列与连接：member_id 为空时兜底为创建人（历史数据）。
+// 三处流水查询（详情、列表、统计 Top）共用，保持 Scan 顺序一致：
+// member_id、member_name、member_avatar、member_color，紧跟在 created_by 三元组之后。
+const txMemberColumns = `,
+       COALESCE(NULLIF(t.member_id, ''), t.created_by),
+       COALESCE(NULLIF(mm.user_name, ''), NULLIF(mu.name, ''), COALESCE(NULLIF(t.member_id, ''), t.created_by), ''),
+       COALESCE(NULLIF(mu.avatar, ''), NULLIF(mm.avatar, ''), ''),
+       COALESCE(mm.color, '#DE8A1E')`
+
+const txMemberJoins = `
+	LEFT JOIN book_members mm ON t.book_id = mm.book_id AND COALESCE(NULLIF(t.member_id, ''), t.created_by) = mm.user_id
+	LEFT JOIN users mu ON COALESCE(NULLIF(t.member_id, ''), t.created_by) = mu.id`
+
 func (r *TransactionRepo) CreateTransaction(ctx context.Context, tx *model.Transaction, tagIDs []string) error {
 	dbTx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -58,16 +71,20 @@ func (r *TransactionRepo) CreateTransaction(ctx context.Context, tx *model.Trans
 	if tx.Reimburse {
 		reimburseInt = 1
 	}
+	// 未指定归属成员时默认是创建人本人。
+	if tx.MemberID == "" {
+		tx.MemberID = tx.CreatedBy
+	}
 
 	insQuery := `
 	INSERT INTO transactions (
 		id, book_id, type, amount, date, tx_time, wallet_id, to_wallet_id, category_id,
-		title, sub_category, note, order_no, include_budget, reimburse, created_by
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		title, sub_category, note, order_no, include_budget, reimburse, created_by, member_id
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	_, err = dbTx.ExecContext(ctx, insQuery,
 		tx.ID, tx.BookID, tx.Type, tx.Amount, tx.Date, tx.TxTime, tx.WalletID, tx.ToWalletID, tx.CategoryID,
-		tx.Title, tx.SubCategory, tx.Note, tx.OrderNo, incBudgetInt, reimburseInt, tx.CreatedBy,
+		tx.Title, tx.SubCategory, tx.Note, tx.OrderNo, incBudgetInt, reimburseInt, tx.CreatedBy, tx.MemberID,
 	)
 	if err != nil {
 		return err
@@ -113,7 +130,7 @@ func (r *TransactionRepo) GetTransaction(ctx context.Context, txID string) (*mod
 	       COALESCE(t.title, ''), COALESCE(t.sub_category, ''), COALESCE(t.note, ''), COALESCE(t.order_no, ''),
 	       COALESCE(t.include_budget, 1), COALESCE(t.reimburse, 0), t.created_by,
 	       COALESCE(NULLIF(bm.user_name, ''), NULLIF(u.name, ''), t.created_by, ''),
-	       COALESCE(NULLIF(u.avatar, ''), NULLIF(bm.avatar, ''), ''),
+	       COALESCE(NULLIF(u.avatar, ''), NULLIF(bm.avatar, ''), '')` + txMemberColumns + `,
 	       t.created_at, t.updated_at,
 	       COALESCE(c.name, ''), COALESCE(c.icon, ''), COALESCE(c.color, ''), COALESCE(c.bg_color, ''),
 	       COALESCE(w.name, ''), COALESCE(tw.name, '')
@@ -122,7 +139,7 @@ func (r *TransactionRepo) GetTransaction(ctx context.Context, txID string) (*mod
 	LEFT JOIN wallets w ON t.wallet_id = w.id
 	LEFT JOIN wallets tw ON t.to_wallet_id = tw.id
 	LEFT JOIN book_members bm ON t.book_id = bm.book_id AND t.created_by = bm.user_id
-	LEFT JOIN users u ON t.created_by = u.id
+	LEFT JOIN users u ON t.created_by = u.id` + txMemberJoins + `
 	WHERE t.id = ?
 	`
 	var tx model.Transaction
@@ -134,6 +151,7 @@ func (r *TransactionRepo) GetTransaction(ctx context.Context, txID string) (*mod
 		&tx.ID, &tx.BookID, &tx.Type, &tx.Amount, &tx.Date, &tx.TxTime, &tx.WalletID, &toW, &catID,
 		&tx.Title, &tx.SubCategory, &tx.Note, &tx.OrderNo,
 		&incBudgetInt, &reimburseInt, &tx.CreatedBy, &tx.CreatedByName, &tx.CreatedByAvatar,
+		&tx.MemberID, &tx.MemberName, &tx.MemberAvatar, &tx.MemberColor,
 		&tx.CreatedAt, &tx.UpdatedAt,
 		&tx.CategoryName, &tx.CategoryIcon, &tx.CategoryColor, &tx.CategoryBgColor,
 		&tx.WalletName, &tx.ToWalletName,
@@ -177,13 +195,17 @@ func (r *TransactionRepo) fetchTxTags(ctx context.Context, txID string) []model.
 	return tags
 }
 
-func (r *TransactionRepo) ListTransactions(ctx context.Context, bookID string, walletID, categoryID, txType, startDate, endDate, search string, limit, offset int) ([]model.Transaction, int, error) {
+func (r *TransactionRepo) ListTransactions(ctx context.Context, bookID string, walletID, categoryID, txType, startDate, endDate, search string, limit, offset int, memberID string) ([]model.Transaction, int, error) {
 	where := []string{"1=1"}
 	var args []interface{}
 
 	if bookID != "" {
 		where = append(where, "t.book_id = ?")
 		args = append(args, bookID)
+	}
+	if memberID != "" {
+		where = append(where, "COALESCE(NULLIF(t.member_id, ''), t.created_by) = ?")
+		args = append(args, memberID)
 	}
 	if walletID != "" {
 		where = append(where, "(t.wallet_id = ? OR t.to_wallet_id = ?)")
@@ -234,7 +256,7 @@ func (r *TransactionRepo) ListTransactions(ctx context.Context, bookID string, w
 	       COALESCE(t.title, ''), COALESCE(t.sub_category, ''), COALESCE(t.note, ''), COALESCE(t.order_no, ''),
 	       COALESCE(t.include_budget, 1), COALESCE(t.reimburse, 0), t.created_by,
 	       COALESCE(NULLIF(bm.user_name, ''), NULLIF(u.name, ''), t.created_by, ''),
-	       COALESCE(NULLIF(u.avatar, ''), NULLIF(bm.avatar, ''), ''),
+	       COALESCE(NULLIF(u.avatar, ''), NULLIF(bm.avatar, ''), '')` + txMemberColumns + `,
 	       t.created_at, t.updated_at,
 	       COALESCE(c.name, ''), COALESCE(c.icon, ''), COALESCE(c.color, ''), COALESCE(c.bg_color, ''),
 	       COALESCE(w.name, ''), COALESCE(tw.name, '')
@@ -243,7 +265,7 @@ func (r *TransactionRepo) ListTransactions(ctx context.Context, bookID string, w
 	LEFT JOIN wallets w ON t.wallet_id = w.id
 	LEFT JOIN wallets tw ON t.to_wallet_id = tw.id
 	LEFT JOIN book_members bm ON t.book_id = bm.book_id AND t.created_by = bm.user_id
-	LEFT JOIN users u ON t.created_by = u.id
+	LEFT JOIN users u ON t.created_by = u.id` + txMemberJoins + `
 	WHERE %s
 	ORDER BY t.date DESC, COALESCE(t.tx_time, '') DESC, t.created_at DESC
 	LIMIT ? OFFSET ?
@@ -266,6 +288,7 @@ func (r *TransactionRepo) ListTransactions(ctx context.Context, bookID string, w
 			&tx.ID, &tx.BookID, &tx.Type, &tx.Amount, &tx.Date, &tx.TxTime, &tx.WalletID, &toW, &catID,
 			&tx.Title, &tx.SubCategory, &tx.Note, &tx.OrderNo,
 			&incBudgetInt, &reimburseInt, &tx.CreatedBy, &tx.CreatedByName, &tx.CreatedByAvatar,
+			&tx.MemberID, &tx.MemberName, &tx.MemberAvatar, &tx.MemberColor,
 			&tx.CreatedAt, &tx.UpdatedAt,
 			&tx.CategoryName, &tx.CategoryIcon, &tx.CategoryColor, &tx.CategoryBgColor,
 			&tx.WalletName, &tx.ToWalletName,
@@ -405,12 +428,12 @@ func (r *TransactionRepo) UpdateTransaction(ctx context.Context, txID string, up
 	query := `
 	SELECT id, book_id, type, amount, date, COALESCE(tx_time, ''), wallet_id, to_wallet_id, category_id,
 	       COALESCE(title, ''), COALESCE(sub_category, ''), COALESCE(note, ''), COALESCE(order_no, ''),
-	       COALESCE(include_budget, 1), COALESCE(reimburse, 0), created_by, created_at, updated_at
+	       COALESCE(include_budget, 1), COALESCE(reimburse, 0), created_by, COALESCE(NULLIF(member_id, ''), created_by), created_at, updated_at
 	FROM transactions WHERE id = ?`
 	err = dbTx.QueryRowContext(ctx, query, txID).Scan(
 		&oldTx.ID, &oldTx.BookID, &oldTx.Type, &oldTx.Amount, &oldTx.Date, &oldTx.TxTime, &oldTx.WalletID, &toW, &catID,
 		&oldTx.Title, &oldTx.SubCategory, &oldTx.Note, &oldTx.OrderNo,
-		&incBudgetInt, &reimburseInt, &oldTx.CreatedBy, &oldTx.CreatedAt, &oldTx.UpdatedAt,
+		&incBudgetInt, &reimburseInt, &oldTx.CreatedBy, &oldTx.MemberID, &oldTx.CreatedAt, &oldTx.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -505,6 +528,11 @@ func (r *TransactionRepo) UpdateTransaction(ctx context.Context, txID string, up
 			newTx.Reimburse = b
 		}
 	}
+	if v, ok := updates["member_id"]; ok {
+		if s, ok := v.(string); ok && s != "" {
+			newTx.MemberID = s
+		}
+	}
 
 	// Rollback old balance
 	switch oldTx.Type {
@@ -575,12 +603,12 @@ func (r *TransactionRepo) UpdateTransaction(ctx context.Context, txID string, up
 	updQuery := `
 	UPDATE transactions SET
 		type = ?, amount = ?, date = ?, tx_time = ?, wallet_id = ?, to_wallet_id = ?, category_id = ?,
-		title = ?, sub_category = ?, note = ?, include_budget = ?, reimburse = ?, updated_at = datetime('now')
+		title = ?, sub_category = ?, note = ?, include_budget = ?, reimburse = ?, member_id = ?, updated_at = datetime('now')
 	WHERE id = ?
 	`
 	_, err = dbTx.ExecContext(ctx, updQuery,
 		newTx.Type, newTx.Amount, newTx.Date, newTx.TxTime, newTx.WalletID, newTx.ToWalletID, newTx.CategoryID,
-		newTx.Title, newTx.SubCategory, newTx.Note, newIncInt, newReimbInt, txID,
+		newTx.Title, newTx.SubCategory, newTx.Note, newIncInt, newReimbInt, newTx.MemberID, txID,
 	)
 	if err != nil {
 		return nil, err
@@ -1011,7 +1039,7 @@ func (r *TransactionRepo) GetStatsReport(ctx context.Context, bookID, period, tx
 		       COALESCE(t.title, ''), COALESCE(t.sub_category, ''), COALESCE(t.note, ''), COALESCE(t.order_no, ''),
 		       COALESCE(t.include_budget, 1), COALESCE(t.reimburse, 0), t.created_by,
 		       COALESCE(NULLIF(bm.user_name, ''), NULLIF(u.name, ''), t.created_by, ''),
-		       COALESCE(NULLIF(u.avatar, ''), NULLIF(bm.avatar, ''), ''),
+		       COALESCE(NULLIF(u.avatar, ''), NULLIF(bm.avatar, ''), '')` + txMemberColumns + `,
 		       t.created_at, t.updated_at,
 		       COALESCE(c.name, ''), COALESCE(c.icon, ''), COALESCE(c.color, ''), COALESCE(c.bg_color, ''),
 		       COALESCE(w.name, ''), COALESCE(tw.name, '')
@@ -1020,7 +1048,7 @@ func (r *TransactionRepo) GetStatsReport(ctx context.Context, bookID, period, tx
 		LEFT JOIN wallets w ON t.wallet_id = w.id
 		LEFT JOIN wallets tw ON t.to_wallet_id = tw.id
 		LEFT JOIN book_members bm ON t.book_id = bm.book_id AND t.created_by = bm.user_id
-		LEFT JOIN users u ON t.created_by = u.id
+		LEFT JOIN users u ON t.created_by = u.id` + txMemberJoins + `
 		WHERE %s AND t.type = ?
 		ORDER BY t.amount DESC, t.date DESC
 		LIMIT 10
@@ -1040,6 +1068,7 @@ func (r *TransactionRepo) GetStatsReport(ctx context.Context, bookID, period, tx
 			&tx.ID, &tx.BookID, &tx.Type, &tx.Amount, &tx.Date, &tx.TxTime, &tx.WalletID, &toW, &catID,
 			&tx.Title, &tx.SubCategory, &tx.Note, &tx.OrderNo,
 			&incBudgetInt, &reimburseInt, &tx.CreatedBy, &tx.CreatedByName, &tx.CreatedByAvatar,
+			&tx.MemberID, &tx.MemberName, &tx.MemberAvatar, &tx.MemberColor,
 			&tx.CreatedAt, &tx.UpdatedAt,
 			&tx.CategoryName, &tx.CategoryIcon, &tx.CategoryColor, &tx.CategoryBgColor,
 			&tx.WalletName, &tx.ToWalletName,
@@ -1059,6 +1088,44 @@ func (r *TransactionRepo) GetStatsReport(ctx context.Context, bookID, period, tx
 	}
 	topRows.Close()
 
+	// 按归属成员聚合（与分类聚合同一口径：所选周期 + 所选类型）。
+	memArgs := append(append([]interface{}{}, args...), txType)
+	memQuery := fmt.Sprintf(`
+		SELECT COALESCE(NULLIF(t.member_id, ''), t.created_by) as mid,
+		       COALESCE(NULLIF(mm.user_name, ''), NULLIF(mu.name, ''), COALESCE(NULLIF(t.member_id, ''), t.created_by), '') as mname,
+		       COALESCE(NULLIF(mu.avatar, ''), NULLIF(mm.avatar, ''), '') as mavatar,
+		       COALESCE(mm.color, '#DE8A1E') as mcolor,
+		       COALESCE(mm.is_virtual, 0) as mvirtual,
+		       COALESCE(SUM(t.amount), 0) as total_amt,
+		       COUNT(*) as cnt
+		FROM transactions t
+		LEFT JOIN book_members mm ON t.book_id = mm.book_id AND COALESCE(NULLIF(t.member_id, ''), t.created_by) = mm.user_id
+		LEFT JOIN users mu ON COALESCE(NULLIF(t.member_id, ''), t.created_by) = mu.id
+		WHERE %s AND t.type = ?
+		GROUP BY mid
+		ORDER BY total_amt DESC
+	`, whereSQL)
+
+	memRows, err := r.db.QueryContext(ctx, memQuery, memArgs...)
+	if err != nil {
+		return nil, err
+	}
+	members := make([]model.StatsMemberItem, 0)
+	for memRows.Next() {
+		var item model.StatsMemberItem
+		var isVirt int
+		if err := memRows.Scan(&item.MemberID, &item.MemberName, &item.MemberAvatar, &item.MemberColor, &isVirt, &item.Amount, &item.Count); err != nil {
+			memRows.Close()
+			return nil, err
+		}
+		item.IsVirtual = isVirt == 1
+		if typeTotal > 0 {
+			item.Percentage = int((item.Amount * 100) / typeTotal)
+		}
+		members = append(members, item)
+	}
+	memRows.Close()
+
 	return &model.StatsReport{
 		Period:          period,
 		Type:            txType,
@@ -1071,6 +1138,7 @@ func (r *TransactionRepo) GetStatsReport(ctx context.Context, bookID, period, tx
 		Budget:          budget,
 		BudgetUsed:      budgetUsed,
 		Categories:      categories,
+		Members:         members,
 		DailySeries:     series,
 		TopTransactions: topTxs,
 	}, nil
@@ -1204,13 +1272,14 @@ func (r *TransactionRepo) GetRangeStats(ctx context.Context, bookID, startDate, 
 	return res, nil
 }
 
-// GetMemberTotals 按创建人汇总一段时间内的收支（用于 Agent query_members 工具）。
+// GetMemberTotals 按归属成员汇总一段时间内的收支（用于 Agent query_members 工具）。
+// 归属成员是流水的 member_id（为空时为创建人），不是创建人本身。
 func (r *TransactionRepo) GetMemberTotals(ctx context.Context, bookID, startDate, endDate string) ([]model.MemberTotal, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT created_by, t.type, COALESCE(SUM(amount), 0), COUNT(*)
+		SELECT COALESCE(NULLIF(member_id, ''), created_by), t.type, COALESCE(SUM(amount), 0), COUNT(*)
 		FROM transactions t
 		WHERE t.book_id = ? AND t.date >= ? AND t.date <= ? AND t.type IN ('expense', 'income')
-		GROUP BY created_by, t.type
+		GROUP BY COALESCE(NULLIF(member_id, ''), created_by), t.type
 	`, bookID, startDate, endDate)
 	if err != nil {
 		return nil, err
