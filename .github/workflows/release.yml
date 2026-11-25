@@ -57,7 +57,10 @@ jobs:
       - name: 安装 ugcli
         run: |
           mkdir -p "$HOME/.local/bin"
-          curl -fSL -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36" \
+          # osswaf 下载源较慢且偶有超时，加重试（单轮最多 5 分钟，总计不超过 15 分钟）
+          curl -fSL --retry 3 --retry-all-errors --retry-delay 10 \
+            --connect-timeout 30 --max-time 300 --retry-max-time 900 \
+            -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36" \
             -o "$HOME/.local/bin/ugcli" \
             "https://osswaf.ugnas.com/pro/ugcli/download/ugcli-v1.1.0.25-linux-amd64"
           chmod +x "$HOME/.local/bin/ugcli"
