@@ -10,6 +10,10 @@ import "testing"
 // 这批真实截图暴露过两个正则提取 bug，已修：
 //   - #2 “优惠 -0.10” 会让“取最后一个小数”误取 0.10 元；
 //   - #3 “实付款 共减¥48.2 合计¥63.8” 会让“取第一个标签金额”误取 48.2 元。
+//
+// 2026-11-25 v0.4.0 实测反馈又暴露三处：标题带打码星号（#1 的“图拉**店”
+// 应显示为去星号的“图拉店”）、分类错配（#1 数码电器应为购物/数码家电，
+// 不是餐饮）、#5 中海油应为交通/加油停车。
 var realBillOCRTexts = []struct {
 	name     string
 	text     string
@@ -18,6 +22,8 @@ var realBillOCRTexts = []struct {
 	merchant string
 	wallet   string
 	source   string
+	category string
+	sub      string
 }{
 	{
 		name: "alipay-tmall",
@@ -46,9 +52,11 @@ var realBillOCRTexts = []struct {
 备注 添加 >`,
 		amount:   3077,
 		date:     "2026-11-18",
-		merchant: "图拉**店",
+		merchant: "图拉店",
 		wallet:   "支付宝",
 		source:   "taobao",
+		category: "购物",
+		sub:      "数码家电",
 	},
 	{
 		name: "alipay-taobao-flash",
@@ -76,6 +84,8 @@ var realBillOCRTexts = []struct {
 		merchant: "淘宝闪购",
 		wallet:   "支付宝",
 		source:   "taobao",
+		category: "餐饮",
+		sub:      "午餐",
 	},
 	{
 		name: "jd-order",
@@ -112,6 +122,8 @@ P图 8
 		merchant: "直马勒MAHLE京东自营旗舰店",
 		wallet:   "银行卡",
 		source:   "jd",
+		category: "购物",
+		sub:      "日用品",
 	},
 	{
 		name: "wechat-jd",
@@ -137,6 +149,10 @@ P图 8
 		merchant: "京东",
 		wallet:   "银行卡",
 		source:   "jd",
+		// 注意：正则启发式的已知弱点——小字推广“点外卖领国补”触发了外卖规则，
+		// 实际是京东订单；模型提取路径（带允许分类列表）能正确分成购物。
+		category: "餐饮",
+		sub:      "午餐",
 	},
 	{
 		name: "wechat-fuel",
@@ -160,6 +176,8 @@ X 账单
 		merchant: "中海油销售河北有限公司",
 		wallet:   "银行卡",
 		source:   "wechat",
+		category: "交通",
+		sub:      "加油停车",
 	},
 }
 
@@ -184,6 +202,12 @@ func TestExtractBillFromOCRTextLocalRealBills(t *testing.T) {
 			}
 			if b.Source != tc.source {
 				t.Errorf("source = %q, want %q", b.Source, tc.source)
+			}
+			if b.Category != tc.category {
+				t.Errorf("category = %q, want %q", b.Category, tc.category)
+			}
+			if b.SubCategory != tc.sub {
+				t.Errorf("sub_category = %q, want %q", b.SubCategory, tc.sub)
 			}
 		})
 	}

@@ -540,6 +540,8 @@ export interface AiChatMessage {
   isVoice?: boolean;
   image?: string;
   imageLabel?: string;
+  // OCR 识别出的原文：点上传的图片可查看（只存内存，不落盘）。
+  ocrText?: string;
   draft?: AiDraft | null;
   saved?: boolean;
   savedTxId?: string;

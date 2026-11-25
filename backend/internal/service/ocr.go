@@ -333,6 +333,7 @@ func extractBillFromOCRTextLocal(text string) *ocrBill {
 	if b.Title == "" {
 		b.Title = "账单消费"
 	}
+	b.Title = cleanBillTitle(b.Title)
 	cat, sub := inferCategoryHintFromText(text, false)
 	b.Category, b.SubCategory = cat, sub
 	return b
