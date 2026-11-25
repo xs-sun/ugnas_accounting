@@ -439,8 +439,9 @@ function onAiViewTx(txId: string) {
       @pointerup="onStagePointerEnd"
       @pointercancel="onStagePointerEnd"
     >
-      <!-- 面板 A：AI 聊着记 -->
-      <div v-if="isAiMode" class="flex-1 min-h-0 flex flex-col overflow-hidden">
+      <!-- 面板 A：AI 聊着记（抽屉关闭时卸载：录音/定时器/DOM 一并释放；
+           聊天记录存在 Pinia 里不在组件里，重新打开后同一次会话的消息还在） -->
+      <div v-if="open && isAiMode" class="flex-1 min-h-0 flex flex-col overflow-hidden">
         <AiChatPanel
           mode="mobile"
           :book-id="store.activeBookId"
