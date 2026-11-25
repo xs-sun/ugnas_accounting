@@ -77,6 +77,7 @@ func (h *AdminHandler) UpdateAiConfig(w http.ResponseWriter, r *http.Request) {
 		SttBaseURL      *string  `json:"stt_base_url"`
 		SttAPIKey       *string  `json:"stt_api_key"`
 		SttModel        *string  `json:"stt_model"`
+		VisionModel     *string  `json:"vision_model"`
 		DailyLimit      *int     `json:"daily_limit"`
 		Temperature     *float64 `json:"temperature"`
 		OcrEnabled      *bool    `json:"ocr_enabled"`
@@ -110,6 +111,9 @@ func (h *AdminHandler) UpdateAiConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.SttModel != nil {
 		cur.SttModel = strings.TrimSpace(*req.SttModel)
+	}
+	if req.VisionModel != nil {
+		cur.VisionModel = strings.TrimSpace(*req.VisionModel)
 	}
 	if req.DailyLimit != nil && *req.DailyLimit > 0 {
 		cur.DailyLimit = *req.DailyLimit

@@ -377,6 +377,9 @@ type AiConfig struct {
 	SttAPIKey       string  `json:"stt_api_key"`
 	HasSttAPIKey    bool    `json:"has_stt_api_key"`
 	SttModel        string  `json:"stt_model"`
+	// VisionModel 是图片识别专用的视觉模型。留空时用 Model。聊天模型大多是纯文本模型，
+	// 看不懂图片，用它做 OCR 会失败或乱猜；视觉识别请在这里填支持图片输入的多模态模型。
+	VisionModel     string  `json:"vision_model"`
 	DailyLimit      int     `json:"daily_limit"`
 	Temperature     float64 `json:"temperature"`
 	OcrEnabled      bool    `json:"ocr_enabled"`

@@ -67,6 +67,7 @@ export interface NormalizedAiConfig {
   sttApiKey: string;
   hasSttApiKey: boolean;
   sttModel: string;
+  visionModel: string;
   dailyLimit: number;
   ocrEnabled: boolean;
   insightsEnabled: boolean;
@@ -164,6 +165,7 @@ export function normalizeAiConfig(raw: any): NormalizedAiConfig {
     sttApiKey: String(raw?.stt_api_key || ''),
     hasSttApiKey: Boolean(raw?.has_stt_api_key ?? Boolean(raw?.stt_api_key)),
     sttModel: String(raw?.stt_model || 'whisper-1'),
+    visionModel: String(raw?.vision_model || ''),
     dailyLimit: Number(raw?.daily_limit ?? 30),
     ocrEnabled: Boolean(raw?.ocr_enabled ?? true),
     insightsEnabled: Boolean(raw?.insights_enabled ?? true),

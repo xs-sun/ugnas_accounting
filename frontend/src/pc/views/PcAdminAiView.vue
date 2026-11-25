@@ -34,6 +34,7 @@ const form = reactive({
   sttApiKeyInput: '',
   hasSttApiKey: false,
   sttModel: 'whisper-1',
+  visionModel: '',
   dailyLimit: 30,
   ocrEnabled: true,
   insightsEnabled: true,
@@ -82,6 +83,7 @@ async function loadAiConfig() {
     form.hasSttApiKey = cfg.hasSttApiKey;
     form.sttApiKeyInput = '';
     form.sttModel = cfg.sttModel || 'whisper-1';
+    form.visionModel = cfg.visionModel;
     form.dailyLimit = cfg.dailyLimit;
     form.ocrEnabled = cfg.ocrEnabled;
     form.insightsEnabled = cfg.insightsEnabled;
@@ -123,6 +125,7 @@ async function handleSaveConfig() {
       model: form.model.trim(),
       stt_base_url: form.sttBaseUrl.trim(),
       stt_model: form.sttModel.trim() || 'whisper-1',
+      vision_model: form.visionModel.trim(),
       daily_limit: Math.max(1, Number(form.dailyLimit) || 30),
       ocr_enabled: form.ocrEnabled,
       insights_enabled: form.insightsEnabled,
@@ -228,6 +231,17 @@ async function handleSaveUserLimit() {
               class="w-full h-9 bg-[#F4F5F8] border border-[#EAECEF] rounded-xl px-3 outline-none focus:border-[#DE8A1E] focus:bg-white"
             />
           </div>
+        </div>
+
+        <div>
+          <label class="block text-[11px] font-semibold text-[#475569] mb-1">视觉模型（图片识别专用）</label>
+          <input
+            v-model="form.visionModel"
+            type="text"
+            placeholder="留空则使用上方聊天模型"
+            class="w-full h-9 bg-[#F4F5F8] border border-[#EAECEF] rounded-xl px-3 outline-none focus:border-[#DE8A1E] focus:bg-white"
+          />
+          <p class="mt-1 text-[10px] text-[#94A3B8]">聊天模型大多是纯文本模型，看不懂图片；图片识别建议填支持图片输入的多模态模型。</p>
         </div>
 
         <div>

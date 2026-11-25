@@ -587,6 +587,7 @@ export interface AdminOverview {
 export interface AdminAiConfig {
   provider: string;
   model: string;
+  vision_model?: string;
   base_url: string;
   api_key: string;
   has_api_key?: boolean;
