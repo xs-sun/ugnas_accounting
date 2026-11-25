@@ -2021,35 +2021,39 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- OCR 查看器：原图 + 识别文字 -->
-    <div
-      v-if="ocrViewer"
-      class="fixed inset-0 z-[100] bg-[#14171A]/85 flex flex-col"
-      @click="closeOcrViewer"
-    >
-      <div class="flex items-center justify-between px-4 pt-12 pb-2 text-white shrink-0">
-        <span class="text-sm font-semibold truncate">{{ ocrViewer.label }}</span>
-        <button
-          type="button"
-          class="w-8 h-8 shrink-0 rounded-full bg-white/15 text-lg leading-none"
-          @click="closeOcrViewer"
-        >
-          ×
-        </button>
-      </div>
-      <div class="flex-1 overflow-y-auto px-4 pb-8 space-y-3 phone-scroll" @click.stop>
-        <img :src="ocrViewer.image" alt="账单图片" class="w-full rounded-2xl" />
-        <div class="bg-white rounded-2xl p-3">
-          <p class="text-[11px] font-semibold text-[#94A3B8] mb-1.5">OCR 识别文字</p>
-          <p
-            v-if="ocrViewer.text"
-            class="text-xs leading-relaxed text-[#18181B] whitespace-pre-wrap break-words"
+    <!-- OCR 查看器：原图 + 识别文字。
+      用 Teleport 挂到 body 上：记账页是底部弹出层，里面的 fixed 定位会被
+      弹出层的 transform 限制，盖不住整屏；挂到 body 上才是真正的全屏预览。 -->
+    <Teleport to="body">
+      <div
+        v-if="ocrViewer"
+        class="fixed inset-0 z-[100] bg-[#14171A] flex flex-col"
+        @click="closeOcrViewer"
+      >
+        <div class="flex items-center justify-between px-4 pt-12 pb-2 text-white shrink-0">
+          <span class="text-sm font-semibold truncate">{{ ocrViewer.label }}</span>
+          <button
+            type="button"
+            class="w-8 h-8 shrink-0 rounded-full bg-white/15 text-lg leading-none"
+            @click="closeOcrViewer"
           >
-            {{ ocrViewer.text }}
-          </p>
-          <p v-else class="text-xs text-[#94A3B8]">这次没有返回识别文字。</p>
+            ×
+          </button>
+        </div>
+        <div class="flex-1 overflow-y-auto px-4 pb-8 space-y-3 phone-scroll" @click.stop>
+          <img :src="ocrViewer.image" alt="账单图片" class="w-full rounded-2xl" />
+          <div class="bg-white rounded-2xl p-3">
+            <p class="text-[11px] font-semibold text-[#94A3B8] mb-1.5">OCR 识别文字</p>
+            <p
+              v-if="ocrViewer.text"
+              class="text-xs leading-relaxed text-[#18181B] whitespace-pre-wrap break-words"
+            >
+              {{ ocrViewer.text }}
+            </p>
+            <p v-else class="text-xs text-[#94A3B8]">这次没有返回识别文字。</p>
+          </div>
         </div>
       </div>
-    </div>
+    </Teleport>
   </div>
 </template>

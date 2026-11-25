@@ -126,6 +126,35 @@ func TestOCRWithLocalOCRAndModel(t *testing.T) {
 	}
 }
 
+func TestOCRViewerRawTextFallback(t *testing.T) {
+	aiSvc, bookA, _, _, _ := setupAgentTest(t)
+	// 本地 OCR 认出了文字，但文字里没有可信金额：模型提不出字段，正则也提不出。
+	ocrText := "支付宝\n签客行烧烤\n付款方式\n花呗\n订单号 202611023001182361430253635"
+	aiSvc.SetOCRProvider(stubOCRProvider{text: ocrText, available: true})
+	// 第 1 次调用（模型按文字提字段）：没金额，提失败；
+	// 第 2 次调用（远程视觉）：给了账单字段，但没回 raw_text。
+	_, srv := newScriptedStubServer(t,
+		textResp(`{"amount_yuan":0}`),
+		textResp(`{"amount_yuan":55.00,"title":"签客行烧烤","category":"餐饮","sub_category":"午餐","wallet":"花呗"}`),
+	)
+	saveOCRTestConfig(t, aiSvc, srv.URL)
+
+	_, draft, rawText, _, err := aiSvc.OCR(context.Background(), "u1", bookA, "", []byte{0xFF, 0xD8, 0xFF, 0xE0}, "alipay.jpg")
+	if err != nil {
+		t.Fatalf("OCR: %v", err)
+	}
+	if draft == nil {
+		t.Fatal("draft is nil")
+	}
+	if draft.Amount != 5500 {
+		t.Errorf("draft.Amount = %d, want 5500", draft.Amount)
+	}
+	// 查看器原文必须来自本地 OCR，不能因为视觉模型没回 raw_text 就为空。
+	if !strings.Contains(rawText, "签客行烧烤") {
+		t.Errorf("rawText should fall back to local OCR text, got %q", rawText)
+	}
+}
+
 func TestOCRWithLocalOCRNoModel(t *testing.T) {
 	aiSvc, bookA, _, _, _ := setupAgentTest(t)
 	aiSvc.SetOCRProvider(stubOCRProvider{text: ocrAlipayText, available: true})
