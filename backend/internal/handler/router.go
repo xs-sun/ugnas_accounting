@@ -32,6 +32,7 @@ type Router struct {
 	snapshotH  *SnapshotHandler
 	streamH    *StreamHandler
 	activityH  *ActivityHandler
+	aiChatH    *AiChatHandler
 	fileServer http.Handler
 }
 
@@ -52,6 +53,7 @@ func NewRouter(
 	snapshotH *SnapshotHandler,
 	streamH *StreamHandler,
 	activityH *ActivityHandler,
+	aiChatH *AiChatHandler,
 ) *Router {
 	return &Router{
 		cfg:        cfg,
@@ -70,6 +72,7 @@ func NewRouter(
 		snapshotH:  snapshotH,
 		streamH:    streamH,
 		activityH:  activityH,
+		aiChatH:    aiChatH,
 		fileServer: http.FileServer(http.Dir(cfg.StaticDir)),
 	}
 }
@@ -81,6 +84,10 @@ var (
 	reBookInviteCode     = regexp.MustCompile(`^/api/v1/books/([^/]+)/invite-code$`)
 	reBookVirtualMembers = regexp.MustCompile(`^/api/v1/books/([^/]+)/virtual-members$`)
 	reBookActivities     = regexp.MustCompile(`^/api/v1/books/([^/]+)/activities$`)
+	reBookAiMessages     = regexp.MustCompile(`^/api/v1/books/([^/]+)/ai-messages$`)
+	reBookAiMessage      = regexp.MustCompile(`^/api/v1/books/([^/]+)/ai-messages/([^/]+)$`)
+	reBookAiImages       = regexp.MustCompile(`^/api/v1/books/([^/]+)/ai-images$`)
+	reBookAiImage        = regexp.MustCompile(`^/api/v1/books/([^/]+)/ai-images/([^/]+)$`)
 	reBookDefault        = regexp.MustCompile(`^/api/v1/books/([^/]+)/default$`)
 	reBookItem           = regexp.MustCompile(`^/api/v1/books/([^/]+)$`)
 
@@ -631,6 +638,46 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if path == "/api/v1/ai/transcribe" {
 		if r.Method == http.MethodPost {
 			rt.aiH.Transcribe(w, r)
+		} else {
+			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		}
+		return
+	}
+
+	// 10b. AI 聊天记录（服务端存储，按用户 + 账本隔离）
+	if m := reBookAiMessages.FindStringSubmatch(path); len(m) > 1 {
+		bookID := m[1]
+		switch r.Method {
+		case http.MethodGet:
+			rt.aiChatH.ListMessages(w, r, bookID)
+		case http.MethodPost:
+			rt.aiChatH.CreateMessage(w, r, bookID)
+		case http.MethodDelete:
+			rt.aiChatH.ClearMessages(w, r, bookID)
+		default:
+			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		}
+		return
+	}
+	if m := reBookAiMessage.FindStringSubmatch(path); len(m) > 2 {
+		if r.Method == http.MethodPatch {
+			rt.aiChatH.UpdateMessage(w, r, m[1], m[2])
+		} else {
+			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		}
+		return
+	}
+	if m := reBookAiImages.FindStringSubmatch(path); len(m) > 1 {
+		if r.Method == http.MethodPost {
+			rt.aiChatH.UploadImage(w, r, m[1])
+		} else {
+			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		}
+		return
+	}
+	if m := reBookAiImage.FindStringSubmatch(path); len(m) > 2 {
+		if r.Method == http.MethodGet {
+			rt.aiChatH.ServeImage(w, r, m[1], m[2])
 		} else {
 			sendError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
 		}

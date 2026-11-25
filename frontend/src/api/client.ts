@@ -39,6 +39,7 @@ import type {
   UpdateProfileRequest,
   BindEmailRequest,
   AiChatResponse,
+  AiChatMessage,
   AiOcrResponse,
   AiInsightsResponse,
   AiTestResponse,
@@ -796,6 +797,80 @@ export const api = {
       book_id: data.book_id,
       demo: data.demo || 'starbucks',
     });
+  },
+
+  // ==================== AI 聊天记录（服务端存储） ====================
+  async listAiMessages(bookId: string): Promise<{ messages: AiChatMessage[] }> {
+    return request<{ messages: AiChatMessage[] }>(
+      `/api/v1/books/${encodeURIComponent(bookId)}/ai-messages`
+    );
+  },
+  async createAiMessage(
+    bookId: string,
+    msg: AiChatMessage
+  ): Promise<{ message: AiChatMessage }> {
+    return jsonRequest<{ message: AiChatMessage }>(
+      `/api/v1/books/${encodeURIComponent(bookId)}/ai-messages`,
+      'POST',
+      {
+        id: msg.id,
+        role: msg.role,
+        text: msg.text,
+        is_voice: msg.isVoice || false,
+        image_path: msg.imagePath || '',
+        image_label: msg.imageLabel || '',
+        ocr_text: msg.ocrText || '',
+        draft: msg.draft || null,
+        saved: msg.saved || false,
+        saved_tx_id: msg.savedTxId || '',
+      }
+    );
+  },
+  async updateAiMessage(
+    bookId: string,
+    msgId: string,
+    patch: Partial<AiChatMessage>
+  ): Promise<{ message: AiChatMessage }> {
+    return jsonRequest<{ message: AiChatMessage }>(
+      `/api/v1/books/${encodeURIComponent(bookId)}/ai-messages/${encodeURIComponent(msgId)}`,
+      'PATCH',
+      {
+        text: patch.text,
+        is_voice: patch.isVoice,
+        image_path: patch.imagePath,
+        image_label: patch.imageLabel,
+        ocr_text: patch.ocrText,
+        draft: patch.draft,
+        saved: patch.saved,
+        saved_tx_id: patch.savedTxId,
+      }
+    );
+  },
+  async clearAiMessages(bookId: string): Promise<{ deleted: number }> {
+    return request<{ deleted: number }>(
+      `/api/v1/books/${encodeURIComponent(bookId)}/ai-messages`,
+      { method: 'DELETE' }
+    );
+  },
+  async uploadAiImage(bookId: string, file: File): Promise<{ image_path: string }> {
+    const formData = new FormData();
+    formData.append('file', file);
+    return request<{ image_path: string }>(
+      `/api/v1/books/${encodeURIComponent(bookId)}/ai-images`,
+      { method: 'POST', body: formData }
+    );
+  },
+  // 图片查看走带鉴权的 GET：取回 blob 转本地 URL 显示，不把 token 放进 <img> 的地址里。
+  async fetchAiImageBlob(bookId: string, name: string): Promise<Blob> {
+    const headers = await getAuthHeaders();
+    const response = await fetch(
+      `/api/v1/books/${encodeURIComponent(bookId)}/ai-images/${encodeURIComponent(name)}`,
+      { headers }
+    );
+    if (!response.ok) {
+      throw new ApiError(`HTTP ${response.status}: ${response.statusText}`, response.status);
+    }
+    return response.blob();
   },
   async getAiInsights(params: {
     book_id: string;

@@ -288,7 +288,12 @@ function closeOcrViewer() {
 
 function toggleEditMessage(msg: AiChatMessage) {
   if (msg.saved) return;
+  const wasEditing = msg.editing;
   msg.editing = !msg.editing;
+  if (wasEditing) {
+    // 点“完成调整”：把改过的草稿同步到服务端。
+    store.updateAiMessage(msg);
+  }
 }
 
 function updateUsageFromResponse(usage?: { today_count: number; daily_limit: number }) {
@@ -310,12 +315,16 @@ async function sendPrompt(rawText: string, isVoice = false) {
     return;
   }
 
-  store.appendAiMessage({
-    id: `u_${Date.now()}`,
+  // 服务端用客户端生成的 id 做主键：同一条消息本地与服务端是同一 id，
+  // 后续更新（入账、改草稿）不用再映射。随机后缀避免同毫秒碰撞。
+  const userMsg: AiChatMessage = {
+    id: `u_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     role: 'user',
     text,
     isVoice,
-  });
+  };
+  store.appendAiMessage(userMsg);
+  store.saveAiMessage(userMsg);
 
   sending.value = true;
   await nextTick();
@@ -328,18 +337,20 @@ async function sendPrompt(rawText: string, isVoice = false) {
       is_voice: isVoice,
     });
     updateUsageFromResponse(res.usage);
-    store.appendAiMessage({
-      id: `a_${Date.now() + 1}`,
+    const assistantMsg: AiChatMessage = {
+      id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       role: 'assistant',
       text: res.reply,
       draft: res.draft,
       saved: false,
       editing: false,
-    });
+    };
+    store.appendAiMessage(assistantMsg);
+    store.saveAiMessage(assistantMsg);
   } catch (err: any) {
     const errMsg = err?.message || 'AI 解析暂不可用，请稍后重试';
     store.appendAiMessage({
-      id: `a_err_${Date.now() + 1}`,
+      id: `a_err_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       role: 'assistant',
       text: `抱歉，${errMsg}`,
       draft: null,
@@ -386,6 +397,8 @@ async function confirmRecordDraft(msg: AiChatMessage) {
     msg.saved = true;
     msg.editing = false;
     msg.savedTxId = tx.id;
+    // 入账状态同步到服务端记录。
+    store.updateAiMessage(msg);
 
     store.showToast(
       `已记入「${targetBookName.value}」¥${centsToYuan(tx.amount).toFixed(2)}`,
@@ -1035,7 +1048,7 @@ async function runOcrRequest(payload: {
 
   mediaTrayOpen.value = false;
   const userMsg: AiChatMessage = {
-    id: `u_img_${Date.now()}`,
+    id: `u_img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     role: 'user',
     text: '',
     image: payload.image,
@@ -1056,18 +1069,31 @@ async function runOcrRequest(payload: {
     updateUsageFromResponse(res.usage);
     // 识别文字留给图片查看器：点图片能看到 OCR 原文。
     if (res.raw_text) userMsg.ocrText = res.raw_text;
-    store.appendAiMessage({
-      id: `a_ocr_${Date.now() + 1}`,
+    // 图片存到服务器（<dataDir>/ai-images/），记录里只记文件名；
+    // 存不上只影响历史里的配图，文字与草稿照常保存。
+    if (payload.file) {
+      try {
+        const uploadRes = await api.uploadAiImage(targetBookId.value, payload.file);
+        userMsg.imagePath = uploadRes.image_path;
+      } catch {
+        // ignore
+      }
+    }
+    store.saveAiMessage(userMsg);
+    const assistantMsg: AiChatMessage = {
+      id: `a_ocr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       role: 'assistant',
       text: res.reply || '已识别图片中的小票与账单信息，点击下方预览卡可直接调整或确认入账：',
       draft: res.draft,
       saved: false,
       editing: false,
-    });
+    };
+    store.appendAiMessage(assistantMsg);
+    store.saveAiMessage(assistantMsg);
   } catch (err: any) {
     const msg = err?.message || '小票识别失败，请稍后重试';
     store.appendAiMessage({
-      id: `a_ocr_err_${Date.now() + 1}`,
+      id: `a_ocr_err_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       role: 'assistant',
       text: `抱歉，${msg}`,
       draft: null,

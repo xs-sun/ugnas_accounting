@@ -182,6 +182,7 @@ func main() {
 	budgetRepo := repository.NewBudgetRepo(db)
 	recurringRepo := repository.NewRecurringRepo(db)
 	settingsRepo := repository.NewSettingsRepo(db, dataDir)
+	aiChatRepo := repository.NewAiChatRepo(db)
 
 	// Initialize Services
 	snapshotService := service.NewSnapshotService(db, snapshotRepo, dataDir)
@@ -216,6 +217,7 @@ func main() {
 	budgetHandler := handler.NewBudgetHandler(budgetRepo, bookRepo, hub, activityRecorder)
 	recurringHandler := handler.NewRecurringHandler(recurringRepo, hub, activityRecorder)
 	aiHandler := handler.NewAiHandler(aiService)
+	aiChatHandler := handler.NewAiChatHandler(aiChatRepo, bookRepo, dataDir)
 	adminHandler := handler.NewAdminHandler(settingsRepo, userRepo, authService)
 	impExpHandler := handler.NewImportExportHandler(importService, exportService, hub, activityRecorder, aiService, bookRepo)
 	snapshotHandler := handler.NewSnapshotHandler(snapshotService)
@@ -245,6 +247,7 @@ func main() {
 		snapshotHandler,
 		streamHandler,
 		activityHandler,
+		aiChatHandler,
 	)
 
 	authMiddleware := handler.NewAuthMiddleware(userRepo, authService)

@@ -561,8 +561,10 @@ export interface AiChatMessage {
   text: string;
   isVoice?: boolean;
   image?: string;
+  // 服务端图片文件名（<dataDir>/ai-images/ 下），加载后由 store 取回 blob 显示。
+  imagePath?: string;
   imageLabel?: string;
-  // OCR 识别出的原文：点上传的图片可查看；随聊天记录按账本存本地（图片本身不存）。
+  // OCR 识别出的原文：点上传的图片可查看；随聊天记录存服务端数据库。
   ocrText?: string;
   draft?: AiDraft | null;
   saved?: boolean;

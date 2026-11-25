@@ -62,6 +62,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 	budgetRepo := repository.NewBudgetRepo(db)
 	recurringRepo := repository.NewRecurringRepo(db)
 	settingsRepo := repository.NewSettingsRepo(db, dataDir)
+	aiChatRepo := repository.NewAiChatRepo(db)
 
 	snapshotSvc := service.NewSnapshotService(db, snapshotRepo, dataDir)
 	importSvc := service.NewImportService(db, txRepo, catRepo, walletRepo)
@@ -85,6 +86,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 	budgetH := NewBudgetHandler(budgetRepo, bookRepo, hub, recorder)
 	recH := NewRecurringHandler(recurringRepo, hub, recorder)
 	aiH := NewAiHandler(aiSvc)
+	aiChatH := NewAiChatHandler(aiChatRepo, bookRepo, dataDir)
 	adminH := NewAdminHandler(settingsRepo, userRepo, authSvc)
 	impExpH := NewImportExportHandler(importSvc, exportSvc, hub, recorder, aiSvc, bookRepo)
 	snapH := NewSnapshotHandler(snapshotSvc)
@@ -93,7 +95,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 
 	router := NewRouter(
 		RouterConfig{AppID: "com.xsguyu.accounting", Version: "0.3.0", StaticDir: filepath.Join(dataDir, "nonexistent_www")},
-		authH, userH, bookH, walletH, catH, txH, reportH, budgetH, recH, aiH, adminH, impExpH, snapH, streamH, activityH,
+		authH, userH, bookH, walletH, catH, txH, reportH, budgetH, recH, aiH, adminH, impExpH, snapH, streamH, activityH, aiChatH,
 	)
 
 	chain := CORSMiddleware(NewAuthMiddleware(userRepo, authSvc)(router))

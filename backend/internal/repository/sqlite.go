@@ -205,6 +205,26 @@ func InitDB(dataDir string) (*DB, error) {
 		FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE
 	);
 
+	CREATE TABLE IF NOT EXISTS ai_chat_messages (
+		id TEXT PRIMARY KEY,
+		book_id TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		role TEXT NOT NULL,
+		text TEXT NOT NULL DEFAULT '',
+		is_voice INTEGER NOT NULL DEFAULT 0,
+		image_path TEXT NOT NULL DEFAULT '',
+		image_label TEXT NOT NULL DEFAULT '',
+		ocr_text TEXT NOT NULL DEFAULT '',
+		draft_json TEXT NOT NULL DEFAULT '',
+		saved INTEGER NOT NULL DEFAULT 0,
+		saved_tx_id TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
+		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_ai_chat_messages_book_user ON ai_chat_messages(book_id, user_id);
+
 	CREATE TABLE IF NOT EXISTS daily_summaries (
 		date TEXT NOT NULL,
 		book_id TEXT NOT NULL,

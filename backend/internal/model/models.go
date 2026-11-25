@@ -1,5 +1,7 @@
 package model
 
+import "encoding/json"
+
 type UserContext struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
@@ -362,6 +364,28 @@ type AiUsageSummary struct {
 	TodayCount int `json:"today_count"`
 	DailyLimit int `json:"daily_limit"`
 	Remaining  int `json:"remaining"`
+}
+
+// AiChatMessage 是存到服务端的 AI 聊天记录：按用户 + 账本隔离，
+// 各人只看自己的对话。Draft 存原始 JSON（前端的草稿字段可能比后端
+// 的 AiDraft 多，如 member_id），读出时原样返回，不做结构校验。
+// ImagePath 只存 ai-images 目录下的文件名，不存绝对路径；文件本身
+// 存在 <dataDir>/ai-images/，随 UGAPP_DATA_DIR 走，Docker 部署时
+// 挂一个数据卷即可一起带走。
+type AiChatMessage struct {
+	ID         string          `json:"id"`
+	BookID     string          `json:"book_id"`
+	UserID     string          `json:"user_id,omitempty"`
+	Role       string          `json:"role"`
+	Text       string          `json:"text"`
+	IsVoice    bool            `json:"is_voice"`
+	ImagePath  string          `json:"image_path,omitempty"`
+	ImageLabel string          `json:"image_label,omitempty"`
+	OcrText    string          `json:"ocr_text,omitempty"`
+	Draft      json.RawMessage `json:"draft,omitempty"`
+	Saved      bool            `json:"saved"`
+	SavedTxID  string          `json:"saved_tx_id,omitempty"`
+	CreatedAt  string          `json:"created_at,omitempty"`
 }
 
 type AiInsightTip struct {

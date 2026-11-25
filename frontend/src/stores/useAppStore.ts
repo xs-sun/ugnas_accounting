@@ -1,4 +1,4 @@
-import { reactive, computed, toRefs, watch } from 'vue';
+import { reactive, computed, toRefs } from 'vue';
 import {
   api,
   ApiError,
@@ -41,10 +41,6 @@ import type {
 
 const ACTIVE_BOOK_STORAGE_KEY = 'cat7_active_book_id';
 const PRIVACY_STORAGE_KEY = 'cat7_privacy_hidden';
-// AI 聊天记录按账本存本地（localStorage），键名后跟账本 id。
-const AI_MESSAGES_STORAGE_PREFIX = 'cat7_ai_messages_';
-// 每个账本最多保留的聊天条数（防 localStorage 爆掉）。
-const AI_MESSAGES_MAX_KEPT = 50;
 
 export type ToastType = 'info' | 'success' | 'error';
 
@@ -346,8 +342,8 @@ async function refreshBooks(opts?: { preferDefault?: boolean }): Promise<Book[]>
     if (typeof localStorage !== 'undefined' && state.activeBookId) {
       localStorage.setItem(ACTIVE_BOOK_STORAGE_KEY, state.activeBookId);
     }
-    // 首次打开 / 账本列表刷新后，读当前账本的聊天记录。
-    loadAiMessagesForBook(state.activeBookId);
+    // 首次打开 / 账本列表刷新后，读当前账本的聊天记录（服务端）。
+    void loadAiMessages(state.activeBookId);
   } else {
     state.activeBookId = '';
   }
@@ -606,8 +602,8 @@ async function switchBook(bookId: string): Promise<void> {
   if (!bookId || bookId === state.activeBookId) return;
   state.activeBookId = bookId;
   state.latestBudgetAlert = null;
-  // 切账本时读该账本的聊天记录（各账本分开存）。
-  loadAiMessagesForBook(bookId);
+  // 切账本时读该账本的聊天记录（服务端，按用户隔离）。
+  void loadAiMessages(bookId);
   if (typeof localStorage !== 'undefined') {
     localStorage.setItem(ACTIVE_BOOK_STORAGE_KEY, bookId);
   }
@@ -802,81 +798,85 @@ function openAuthRequired(): void {
 
 function appendAiMessage(msg: AiChatMessage): void {
   state.aiMessages.push(msg);
-  persistAiMessages();
 }
 
 function clearAiMessages(): void {
   state.aiMessages = createDefaultWelcomeMessage();
-  if (typeof localStorage !== 'undefined' && state.activeBookId) {
+  revokeAiImageBlobUrls();
+  // 服务端同步清掉该用户在该账本的记录（含图片文件）；失败不打扰用户。
+  const bookId = state.activeBookId;
+  if (bookId) {
+    void api.clearAiMessages(bookId).catch(() => undefined);
+  }
+}
+
+// 服务端图片取回后转成的本地 URL（msg.id → object URL），
+// 切账本 / 读新历史 / 清空时统一释放，避免泄漏。
+const aiImageBlobUrls = new Map<string, string>();
+
+function revokeAiImageBlobUrls(): void {
+  for (const url of aiImageBlobUrls.values()) {
     try {
-      localStorage.removeItem(AI_MESSAGES_STORAGE_PREFIX + state.activeBookId);
+      URL.revokeObjectURL(url);
     } catch {
       // ignore
     }
   }
+  aiImageBlobUrls.clear();
 }
 
-function aiMessagesStorageKey(bookId: string): string {
-  return AI_MESSAGES_STORAGE_PREFIX + bookId;
+// 聊天记录存在服务端（DB + <dataDir>/ai-images/），按用户 + 账本隔离。
+// 保存失败不打扰用户：本会话内记录还在，下次打开时以服务端为准。
+function saveAiMessage(msg: AiChatMessage): void {
+  if (!state.activeBookId) return;
+  void api.createAiMessage(state.activeBookId, msg).catch(() => undefined);
 }
 
-// 聊天记录落盘：文字、草稿、OCR 文本、已入账状态都存；
-// 图片是 data URL（单张几百 KB），不存，避免 localStorage 爆掉。
-function serializeAiMessages(messages: AiChatMessage[]): AiChatMessage[] {
-  return messages.slice(-AI_MESSAGES_MAX_KEPT).map((m) => {
-    const { image: _image, editing: _editing, ...rest } = m;
-    void _image;
-    void _editing;
-    return rest as AiChatMessage;
-  });
+function updateAiMessage(msg: AiChatMessage): void {
+  if (!state.activeBookId) return;
+  void api.updateAiMessage(state.activeBookId, msg.id, msg).catch(() => undefined);
 }
 
-function persistAiMessages(): void {
-  if (typeof localStorage === 'undefined' || !state.activeBookId) return;
-  const key = aiMessagesStorageKey(state.activeBookId);
+async function loadAiMessages(bookId: string): Promise<void> {
+  if (!bookId) return;
+  revokeAiImageBlobUrls();
+  let serverMessages: AiChatMessage[] | null = null;
   try {
-    localStorage.setItem(key, JSON.stringify(serializeAiMessages(state.aiMessages)));
+    const res = await api.listAiMessages(bookId);
+    serverMessages = res.messages || [];
   } catch {
-    // 空间不足时只留最近 20 条再试一次，还不行就放弃（不影响记账本身）。
-    try {
-      localStorage.setItem(
-        key,
-        JSON.stringify(serializeAiMessages(state.aiMessages).slice(-20))
-      );
-    } catch {
-      // ignore
+    // 服务端读不到时保留当前内存里的记录，不影响本次会话。
+    return;
+  }
+  if (serverMessages.length > 0) {
+    state.aiMessages = serverMessages.map((m) => ({ ...m, editing: false }));
+    for (const m of state.aiMessages) {
+      void resolveAiMessageImage(m);
     }
+  } else if (state.aiMessages.length <= 1) {
+    // 服务端没有记录，且内存里也只有欢迎语：保持欢迎语。
+    state.aiMessages = createDefaultWelcomeMessage();
   }
+  // 服务端为空但内存里有多条记录：说明是还没来得及保存的新消息，保留内存里的。
 }
 
-function loadAiMessagesForBook(bookId: string): void {
-  if (typeof localStorage === 'undefined' || !bookId) return;
-  let raw: string | null = null;
-  try {
-    raw = localStorage.getItem(aiMessagesStorageKey(bookId));
-  } catch {
-    raw = null;
+// 服务端图片用 Bearer 取回 blob 再显示（不把 token 放进 <img> 地址）。
+async function resolveAiMessageImage(msg: AiChatMessage): Promise<void> {
+  if (!msg.imagePath || msg.image) return;
+  const cached = aiImageBlobUrls.get(msg.id);
+  if (cached) {
+    msg.image = cached;
+    return;
   }
-  if (!raw) return;
   try {
-    const parsed: unknown = JSON.parse(raw);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      state.aiMessages = (parsed as AiChatMessage[]).map((m) => ({
-        ...m,
-        editing: false,
-      }));
-    }
+    const blob = await api.fetchAiImageBlob(state.activeBookId, msg.imagePath);
+    const url = URL.createObjectURL(blob);
+    aiImageBlobUrls.set(msg.id, url);
+    msg.image = url;
   } catch {
-    // 损坏的历史直接丢弃，保留默认欢迎语。
+    // 图片取不到时只影响该条的配图显示，不影响文字与草稿。
   }
 }
-
-// 聊天记录有任何变化（新增、入账、OCR 文本回填、草稿编辑）都实时落盘。
-watch(
-  () => state.aiMessages,
-  () => persistAiMessages(),
-  { deep: true }
-);
 
 function hasAuthToken(): boolean {
   return Boolean(getStoredAuthToken());
@@ -925,6 +925,9 @@ const appStore = reactive({
   openAuthRequired,
   appendAiMessage,
   clearAiMessages,
+  saveAiMessage,
+  updateAiMessage,
+  loadAiMessages,
   hasAuthToken,
 });
 
