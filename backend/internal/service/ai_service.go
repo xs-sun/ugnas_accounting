@@ -825,6 +825,15 @@ func (s *AiService) OCR(ctx context.Context, userID, bookID, demo string, fileBy
 		}
 	}
 
+	// 识别原文兜底：账单字段可能来自远程视觉，但视觉模型未必会把 raw_text
+	// 回传（没给就拿不到原文，查看器只能显示“没有返回识别文字”）。
+	// 本地 OCR 只要认出了文字，就拿它做查看器的原文，不管字段是哪条路来的。
+	if rawText == "" && amtCents > 0 && s.LocalOCRAvailable() && len(fileBytes) > 0 {
+		if res, err := s.ocr.Recognize(ctx, fileBytes); err == nil {
+			rawText = strings.TrimSpace(res.Text)
+		}
+	}
+
 	// 标题最后一道清洗：任何路径来的标题都不许带打码星号。
 	title = cleanBillTitle(title)
 	cid, cname, sub, icon, color, bg := s.resolveCategoryMatch(ctx, bookID, "expense", catHint, subHint)
