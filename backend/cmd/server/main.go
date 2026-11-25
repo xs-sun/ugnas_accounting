@@ -189,6 +189,14 @@ func main() {
 	exportService := service.NewExportService(db)
 	authService := service.NewAuthService(userRepo, settingsRepo)
 	aiService := service.NewAiService(bookRepo, catRepo, walletRepo, txRepo, budgetRepo, userRepo, settingsRepo)
+	// 本地 OCR（RapidOCR）：程序 + 模型由 build.sh 打进安装包；找不到时
+	// OCR 自动走远程视觉，不影响启动。
+	if ocrProvider := service.ResolveRapidOCRProvider(); ocrProvider != nil {
+		aiService.SetOCRProvider(ocrProvider)
+		log.Printf("[INFO] 本地 OCR 已启用: %s", ocrProvider.BinaryPath())
+	} else {
+		log.Printf("[INFO] 本地 OCR 不可用（未找到 RapidOCR 程序或模型），OCR 将走远程视觉")
+	}
 	// SSE 实时同步的进程内订阅中心（单进程常驻，即时直推，无外部组件）。
 	hub := service.NewHub()
 	activityRepo := repository.NewActivityRepo(db)

@@ -101,6 +101,10 @@ func (h *AiHandler) OCR(w http.ResponseWriter, r *http.Request) {
 			sendError(w, http.StatusForbidden, "OCR 服务已关闭")
 			return
 		}
+		if errors.Is(err, service.ErrOcrUnrecognized) {
+			sendError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
 		sendError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

@@ -112,6 +112,12 @@ jobs:
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           echo "发布版本：$VERSION（tag v$VERSION）"
 
+      - name: 下载 RapidOCR（PP-OCRv6）
+        run: |
+          # 本地 OCR 程序 + 模型（约 100MB 下载），供 build.sh 打进 .upk。
+          # 脚本内含 SHA-256 校验；已下载过会跳过。
+          bash scripts/download-rapidocr.sh
+
       - name: 构建并打包 .upk（amd64）
         run: |
           ./build.sh --pack --build "${{ github.run_number }}" --arch amd64

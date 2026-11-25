@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"com.xsguyu.accounting/backend/internal/model"
 	"com.xsguyu.accounting/backend/internal/repository"
@@ -23,6 +24,8 @@ var (
 	ErrAiDisabled       = errors.New("ai service is disabled")
 	ErrAiLimitExceed    = errors.New("daily ai usage limit exceeded")
 	ErrSttNotConfigured = errors.New("speech-to-text service is not configured")
+	// ErrOcrUnrecognized 是图片识别失败时的错误：如实告诉用户，不要编造账单。
+	ErrOcrUnrecognized = errors.New("图片没识别出来，请重新拍一张清晰的小票照片，或手动输入金额")
 )
 
 type AiService struct {
@@ -33,6 +36,18 @@ type AiService struct {
 	budgetRepo   *repository.BudgetRepo
 	userRepo     *repository.UserRepo
 	settingsRepo *repository.SettingsRepo
+	// ocr 是本地 OCR 引擎（RapidOCR），为 nil 或不可用时 OCR 走远程视觉。
+	ocr OCRProvider
+}
+
+// SetOCRProvider 设置本地 OCR 引擎（启动时由 main 调用，未配置则保持 nil）。
+func (s *AiService) SetOCRProvider(p OCRProvider) {
+	s.ocr = p
+}
+
+// LocalOCRAvailable 报告本地 OCR 是否就绪。
+func (s *AiService) LocalOCRAvailable() bool {
+	return s.ocr != nil && s.ocr.Available()
 }
 
 func NewAiService(
@@ -573,6 +588,8 @@ func (s *AiService) OCR(ctx context.Context, userID, bookID, demo string, fileBy
 
 	bookID = s.resolveBookID(ctx, userID, bookID)
 	today := time.Now().Format("2006-01-02")
+	billDate := today
+	localOCRUsed := false
 
 	var rawText string
 	var amtCents int64
@@ -594,8 +611,23 @@ func (s *AiService) OCR(ctx context.Context, userID, bookID, demo string, fileBy
 		title = "星巴克 · 燕麦拿铁"
 		walletHint = "微信"
 	default:
-		// Try remote vision model if configured with real external key
-		if len(fileBytes) > 0 && strings.TrimSpace(cfg.APIKey) != "" && !strings.HasPrefix(cfg.APIKey, "sk-cat7-") && strings.TrimSpace(cfg.BaseURL) != "" {
+		// 1. 本地 OCR（RapidOCR，截图不出 NAS）：先认成文字，再按来源提字段。
+		if s.LocalOCRAvailable() && len(fileBytes) > 0 {
+			if b, ok := s.tryLocalOCR(ctx, cfg, bookID, fileBytes); ok && b.AmountCents > 0 {
+				rawText = b.RawText
+				amtCents = b.AmountCents
+				title = b.Title
+				catHint = b.Category
+				subHint = b.SubCategory
+				walletHint = b.Wallet
+				if b.Date != "" {
+					billDate = b.Date
+				}
+				localOCRUsed = true
+			}
+		}
+		// 2. 远程视觉模型（配了真实 key 时）。
+		if amtCents == 0 && len(fileBytes) > 0 && strings.TrimSpace(cfg.APIKey) != "" && !strings.HasPrefix(cfg.APIKey, "sk-cat7-") && strings.TrimSpace(cfg.BaseURL) != "" {
 			if rRaw, rAmt, rTitle, rCat, rSub, rWallet, ok := s.tryRemoteOCR(ctx, cfg, fileBytes); ok && rAmt > 0 {
 				rawText = rRaw
 				amtCents = rAmt
@@ -605,22 +637,20 @@ func (s *AiService) OCR(ctx context.Context, userID, bookID, demo string, fileBy
 				walletHint = rWallet
 			}
 		}
-		if amtCents == 0 {
-			// Local receipt fallback parsing (extract text clues if UTF-8 receipt text or filename hints exist)
+		// 3. 纯文本小票文件（.txt 上传）：直接解析文本内容。
+		if amtCents == 0 && len(fileBytes) > 0 && len(fileBytes) < 4096 && utf8.Valid(fileBytes) {
 			textSnippet := strings.TrimSpace(string(fileBytes))
-			if m := numRegex.FindStringSubmatch(textSnippet); len(m) > 1 && len(fileBytes) < 4096 {
+			if m := numRegex.FindStringSubmatch(textSnippet); len(m) > 1 {
 				amtCents = parseYuanTextToCents(m[1])
 				rawText = textSnippet
 				catHint, subHint = inferCategoryHintFromText(textSnippet, false)
 				title = cleanDraftTitle(textSnippet, "小票识别消费")
 				walletHint = textSnippet
-			} else {
-				rawText = fmt.Sprintf("小票凭证 (%s)\n识别商户：品质生活消费\n合计：¥38.00\n支付方式：微信支付", fileName)
-				amtCents = 3800
-				catHint, subHint = "餐饮", "咖啡饮品"
-				title = "小票识别 · 消费记录"
-				walletHint = "微信"
 			}
+		}
+		// 4. 都没认出来：如实报错，绝不编造一张假小票。
+		if amtCents == 0 {
+			return "", nil, "", model.AiUsageSummary{TodayCount: todayCount, DailyLimit: limit, Remaining: limit - todayCount}, ErrOcrUnrecognized
 		}
 	}
 
@@ -639,7 +669,7 @@ func (s *AiService) OCR(ctx context.Context, userID, bookID, demo string, fileBy
 		BgColor:       bg,
 		WalletID:      wid,
 		WalletName:    wname,
-		Date:          today,
+		Date:          billDate,
 	}
 
 	modelName := cfg.Model
@@ -653,7 +683,11 @@ func (s *AiService) OCR(ctx context.Context, userID, bookID, demo string, fileBy
 		rem = 0
 	}
 
-	return "已识别小票/账单明细并生成草稿，核对后可一键入账：", draft, rawText, model.AiUsageSummary{
+	reply := "已识别小票/账单明细并生成草稿，核对后可一键入账："
+	if localOCRUsed {
+		reply = "已通过本地 OCR 识别账单明细并生成草稿，核对后可一键入账："
+	}
+	return reply, draft, rawText, model.AiUsageSummary{
 		TodayCount: newToday,
 		DailyLimit: limit,
 		Remaining:  rem,
@@ -714,6 +748,123 @@ func (s *AiService) tryRemoteOCR(ctx context.Context, cfg *model.AiConfig, fileB
 		return "", 0, "", "", "", "", false
 	}
 	return parsed.RawText, parseYuanTextToCents(fmt.Sprintf("%.2f", parsed.AmountYuan)), parsed.Title, parsed.Category, parsed.SubCategory, parsed.Wallet, true
+}
+
+// tryLocalOCR 用本地 RapidOCR 认图，再按账单来源提取字段。
+// 流程：OCR 成文字 → 检测来源（微信/支付宝/京东/淘宝/拼多多/外卖）→
+// 配了模型就让大模型按来源提字段，没配模型（或模型提失败）就用正则/关键词兜底。
+// 拿不到可信金额时返回 ok=false，交给远程视觉或如实报错。
+func (s *AiService) tryLocalOCR(ctx context.Context, cfg *model.AiConfig, bookID string, fileBytes []byte) (*ocrBill, bool) {
+	res, err := s.ocr.Recognize(ctx, fileBytes)
+	if err != nil || strings.TrimSpace(res.Text) == "" {
+		return nil, false
+	}
+	rawText := strings.TrimSpace(res.Text)
+	source := detectBillSource(rawText)
+
+	// 1. 大模型按来源提取（只发文字，不发图片）。
+	if strings.TrimSpace(cfg.APIKey) != "" && !strings.HasPrefix(cfg.APIKey, "sk-cat7-") && strings.TrimSpace(cfg.BaseURL) != "" {
+		if b, ok := s.extractBillFromOCRText(ctx, cfg, source, rawText); ok && b.AmountCents > 0 {
+			b.RawText = rawText
+			b.Source = source
+			return b, true
+		}
+	}
+	// 2. 正则/关键词兜底（不花模型调用次数）。
+	if b := extractBillFromOCRTextLocal(rawText); b != nil {
+		return b, true
+	}
+	return nil, false
+}
+
+// extractBillFromOCRText 让文本模型从 OCR 文字里按来源提取账单字段。
+// 只发文字，不发图片；金额取票面上的合计/实付，绝不累加商品行。
+func (s *AiService) extractBillFromOCRText(ctx context.Context, cfg *model.AiConfig, source, ocrText string) (*ocrBill, bool) {
+	sourceName := billSourceNames[source]
+	if sourceName == "" {
+		sourceName = billSourceNames["receipt"]
+	}
+	sysPrompt := fmt.Sprintf(`你是七喵记账的账单提取助手。用户上传了一张%s截图，已由本地 OCR 识别成文字（见下文）。
+请只根据 OCR 文字提取一笔账，严格返回 JSON：{"date":"2026-11-25","amount_yuan":38.50,"merchant":"星巴克咖啡","title":"星巴克咖啡","category":"餐饮","sub_category":"咖啡饮品","wallet":"微信支付"}
+规则：
+- 金额取票面上的合计/总计/实付/实付款/支付金额，绝不能把多个商品金额相加；金额为负数时取绝对值；如果 OCR 文字里没有可信金额，返回 {"amount_yuan":0}。
+- 日期取票面上的交易日期（YYYY-MM-DD）；没有则返回 ""。
+- 商户取收款方/店铺名；没有则返回 ""。
+- 钱包取付款方式原文，如 微信支付/支付宝/花呗/银行卡/现金；没有则返回 ""。
+- 只返回 JSON，不要解释。`, sourceName)
+	if len(ocrText) > 4000 {
+		ocrText = ocrText[:4000]
+	}
+	reqPayload := map[string]interface{}{
+		"model":       cfg.Model,
+		"temperature": 0,
+		"messages": []map[string]string{
+			{"role": "system", "content": sysPrompt},
+			{"role": "user", "content": ocrText},
+		},
+	}
+	bodyBytes, _ := json.Marshal(reqPayload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(cfg.BaseURL, "/")+"/chat/completions", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil || resp == nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, false
+	}
+	var apiRes struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&apiRes); err != nil || len(apiRes.Choices) == 0 {
+		return nil, false
+	}
+	content := strings.TrimSpace(apiRes.Choices[0].Message.Content)
+	content = strings.TrimPrefix(content, "```json")
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSuffix(content, "```")
+	content = strings.TrimSpace(content)
+	var parsed struct {
+		Date        string  `json:"date"`
+		AmountYuan  float64 `json:"amount_yuan"`
+		Merchant    string  `json:"merchant"`
+		Title       string  `json:"title"`
+		Category    string  `json:"category"`
+		SubCategory string  `json:"sub_category"`
+		Wallet      string  `json:"wallet"`
+	}
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil || parsed.AmountYuan <= 0 {
+		return nil, false
+	}
+	date := ""
+	if _, err := time.Parse("2006-01-02", strings.TrimSpace(parsed.Date)); err == nil {
+		date = strings.TrimSpace(parsed.Date)
+	}
+	title := strings.TrimSpace(parsed.Title)
+	if title == "" {
+		title = strings.TrimSpace(parsed.Merchant)
+	}
+	if title == "" {
+		title = "账单消费"
+	}
+	return &ocrBill{
+		AmountCents: parseYuanTextToCents(fmt.Sprintf("%.2f", parsed.AmountYuan)),
+		Title:       title,
+		Category:    strings.TrimSpace(parsed.Category),
+		SubCategory: strings.TrimSpace(parsed.SubCategory),
+		Wallet:      strings.TrimSpace(parsed.Wallet),
+		Date:        date,
+	}, true
 }
 
 func (s *AiService) Insights(ctx context.Context, userID, bookID, period, txType string, seed int) (*model.AiInsightsResponse, error) {
@@ -1036,11 +1187,12 @@ func (s *AiService) GetCapabilities(ctx context.Context) map[string]interface{} 
 		sttOK = false
 	}
 	return map[string]interface{}{
-		"enabled":          cfg.Enabled,
-		"ocr_enabled":      cfg.OcrEnabled,
-		"insights_enabled": cfg.InsightsEnabled,
-		"stt_configured":   sttOK,
-		"stt_model":        sttModel,
+		"enabled":             cfg.Enabled,
+		"ocr_enabled":         cfg.OcrEnabled,
+		"local_ocr_available": s.LocalOCRAvailable(),
+		"insights_enabled":    cfg.InsightsEnabled,
+		"stt_configured":      sttOK,
+		"stt_model":           sttModel,
 	}
 }
 
