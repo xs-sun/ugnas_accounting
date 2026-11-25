@@ -56,3 +56,7 @@ logs/
 *.sublime-workspace
 *.swp
 *~
+
+# 本地 OCR（RapidOCR 程序 + PP-OCRv6 模型，体积大，不进仓库；CI/本地用 scripts/download-rapidocr.sh 下载）
+third_party/
+rootfs_common/ocr/

@@ -531,12 +531,39 @@ normalize_rootfs_permissions() {
   done
   for bin in "$ROOT_DIR/rootfs_amd64/bin/accounting_core" \
              "$ROOT_DIR/rootfs_amd64/bin/accounting_serv" \
+             "$ROOT_DIR/rootfs_amd64/bin/ppu-paddle-ocr" \
              "$ROOT_DIR/rootfs_arm64/bin/accounting_core" \
              "$ROOT_DIR/rootfs_arm64/bin/accounting_serv"; do
     if [ -f "$bin" ]; then
       chmod 0755 "$bin"
     fi
   done
+}
+
+# 本地 OCR（RapidOCR）：把 third_party/rapidocr 下的程序和模型拷进 rootfs。
+# 程序是 amd64 的，只进 rootfs_amd64；模型是架构无关的，进 rootfs_common。
+# 没下载时跳过（本地 OCR 不可用，不影响打包）；CI 里先跑 scripts/download-rapidocr.sh。
+stage_rapidocr_files() {
+  local src_bin="$ROOT_DIR/third_party/rapidocr/ppu-paddle-ocr"
+  local src_models="$ROOT_DIR/third_party/rapidocr/models"
+  if [ ! -f "$src_bin" ]; then
+    log_warn "RapidOCR 程序未找到（third_party/rapidocr/ppu-paddle-ocr），跳过本地 OCR 打包；先跑 scripts/download-rapidocr.sh 下载。"
+    return 0
+  fi
+  if ! is_elf_binary "$src_bin"; then
+    log_error "RapidOCR 程序 $src_bin 不是原生 ELF 文件，拒绝打包。"
+    exit 1
+  fi
+  for m in PP-OCRv6_small_det.ort PP-OCRv6_small_rec.ort ppocrv6_dict.txt; do
+    if [ ! -f "$src_models/$m" ]; then
+      log_error "RapidOCR 模型缺失：$src_models/$m（先跑 scripts/download-rapidocr.sh）"
+      exit 1
+    fi
+  done
+  mkdir -p "$ROOT_DIR/rootfs_amd64/bin" "$ROOT_DIR/rootfs_common/ocr/models"
+  cp "$src_bin" "$ROOT_DIR/rootfs_amd64/bin/ppu-paddle-ocr"
+  cp "$src_models/PP-OCRv6_small_det.ort" "$src_models/PP-OCRv6_small_rec.ort" "$src_models/ppocrv6_dict.txt" "$ROOT_DIR/rootfs_common/ocr/models/"
+  log_success "RapidOCR 已打进安装包：bin/ppu-paddle-ocr + ocr/models/（PP-OCRv6 small，约 31MB 模型）"
 }
 
 is_elf_binary() {
@@ -551,6 +578,7 @@ if [ "$DO_RUN" = true ] && [ "$DO_PACK" = false ]; then
   log_info "Skipping package validation for direct local run."
 else
   log_step "[4/4] Package Structure Validation & Packaging"
+  stage_rapidocr_files
   normalize_rootfs_permissions
 
   if [ "$DO_PACK" = true ] && [ "${ALLOW_POSIX_LAUNCHER:-0}" != "1" ]; then
