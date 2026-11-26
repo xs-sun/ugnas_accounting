@@ -428,7 +428,7 @@ func TestBooksWalletsCategoriesTransactionsAndBudgets(t *testing.T) {
 	// Verify 10 expense top cats + 36 subcats + 5 income top cats + 10 subcats = 61 categories
 	cats, err := env.catRepo.ListCategories(context.Background(), bookID, "")
 	if err != nil || len(cats) != 61 {
-		t.Fatalf("expected 61 preset categories, got %d (err=%v)", len(cats), err)
+		t.Fatalf("expected 66 preset categories, got %d (err=%v)", len(cats), err)
 	}
 	var foodCatID, shopCatID, coffeeSubID string
 	for _, c := range cats {

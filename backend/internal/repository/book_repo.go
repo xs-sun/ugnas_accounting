@@ -48,6 +48,7 @@ var presetBookCategories = []presetCat{
 			{name: "咖啡饮品", icon: "coffee"},
 			{name: "买菜水果", icon: "fruit"},
 			{name: "聚餐", icon: "dining"},
+			{name: "夜宵", icon: "bowl"},
 		},
 	},
 	{
@@ -67,6 +68,8 @@ var presetBookCategories = []presetCat{
 			{name: "打车出行", icon: "car"},
 			{name: "加油停车", icon: "fuel"},
 			{name: "高铁机票", icon: "plane"},
+			{name: "车辆保养", icon: "wrench"},
+			{name: "车险", icon: "shield"},
 		},
 	},
 	{
@@ -76,6 +79,7 @@ var presetBookCategories = []presetCat{
 			{name: "水电燃气", icon: "bolt"},
 			{name: "宽带话费", icon: "wifi"},
 			{name: "家居维修", icon: "wrench"},
+			{name: "家具家电", icon: "home"},
 		},
 	},
 	{
@@ -85,6 +89,7 @@ var presetBookCategories = []presetCat{
 			{name: "游戏充值", icon: "gamepad"},
 			{name: "运动健身", icon: "dumbbell"},
 			{name: "旅行出游", icon: "compass"},
+			{name: "影音会员", icon: "film"},
 		},
 	},
 	{

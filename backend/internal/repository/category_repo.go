@@ -244,3 +244,66 @@ func (r *CategoryRepo) DeleteTag(ctx context.Context, tagID string) error {
 	}
 	return nil
 }
+
+// EnsurePresetCategories 把预置分类里缺失的项补进所有已有的账本。
+// 预置分类只在建账本时写入一次（CreateBook），之后再加新分类（比如
+// 交通/车辆保养、交通/车险）老账本是拿不到的；这个方法在每次启动时
+// 跑一遍，按（账本、类型、父级、名称）比对、缺失才插入，幂等。
+// 返回本次补进的分类条数。
+func (r *CategoryRepo) EnsurePresetCategories(ctx context.Context) (int, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT id FROM books`)
+	if err != nil {
+		return 0, err
+	}
+	var bookIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		bookIDs = append(bookIDs, id)
+	}
+	rows.Close()
+
+	added := 0
+	catQuery := `INSERT INTO categories (id, book_id, type, name, icon, color, bg_color, parent_id, is_custom, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
+	budgetQuery := `INSERT INTO category_budgets (book_id, category_id, limit_amount) VALUES (?, ?, ?) ON CONFLICT(book_id, category_id) DO NOTHING`
+	for _, bookID := range bookIDs {
+		for idx, c := range presetBookCategories {
+			var parentID string
+			if err := r.db.QueryRowContext(ctx,
+				`SELECT id FROM categories WHERE book_id = ? AND type = ? AND parent_id IS NULL AND name = ?`,
+				bookID, c.cType, c.name).Scan(&parentID); err != nil {
+				parentID = uuid.NewString()
+				if _, err := r.db.ExecContext(ctx, catQuery, parentID, bookID, c.cType, c.name, c.icon, c.color, c.bgColor, nil, idx+1); err != nil {
+					return added, err
+				}
+				added++
+				if c.budget > 0 {
+					if _, err := r.db.ExecContext(ctx, budgetQuery, bookID, parentID, c.budget); err != nil {
+						return added, err
+					}
+				}
+			}
+			var maxOrder int
+			_ = r.db.QueryRowContext(ctx,
+				`SELECT COALESCE(MAX(sort_order), 0) FROM categories WHERE book_id = ? AND parent_id = ?`,
+				bookID, parentID).Scan(&maxOrder)
+			for sIdx, sub := range c.subs {
+				dup, err := r.ExistsDuplicate(ctx, bookID, c.cType, &parentID, sub.name)
+				if err != nil {
+					return added, err
+				}
+				if dup {
+					continue
+				}
+				if _, err := r.db.ExecContext(ctx, catQuery, uuid.NewString(), bookID, c.cType, sub.name, sub.icon, c.color, c.bgColor, parentID, maxOrder+sIdx+1); err != nil {
+					return added, err
+				}
+				added++
+			}
+		}
+	}
+	return added, nil
+}
