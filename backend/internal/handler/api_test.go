@@ -425,9 +425,9 @@ func TestBooksWalletsCategoriesTransactionsAndBudgets(t *testing.T) {
 		t.Fatalf("unexpected auto-seeded book: %+v", b0)
 	}
 
-	// Verify 10 expense top cats + 36 subcats + 5 income top cats + 10 subcats = 61 categories
+	// Verify 10 expense top cats + 41 subcats + 5 income top cats + 10 subcats = 66 categories
 	cats, err := env.catRepo.ListCategories(context.Background(), bookID, "")
-	if err != nil || len(cats) != 61 {
+	if err != nil || len(cats) != 66 {
 		t.Fatalf("expected 66 preset categories, got %d (err=%v)", len(cats), err)
 	}
 	var foodCatID, shopCatID, coffeeSubID string
