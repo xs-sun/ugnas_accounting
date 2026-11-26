@@ -53,6 +53,9 @@ const submitting = ref(false);
 
 // 日期时间选择器：金额下方的日期胶囊点开，底部弹出月历 + 时间滚轮。
 const dtPickerOpen = ref(false);
+// 账户选择器：日期旁边的账户胶囊点开，底部弹出账户列表选（之前是点一下
+// 轮换下一个账户，账本多的时候要点很多下才能轮到想要的）。
+const walletPickerOpen = ref(false);
 const dateTimeModel = computed<DateTimeValue>({
   get: () => ({ date: txDate.value, time: txTime.value }),
   set: (val) => {
@@ -170,15 +173,17 @@ function switchManualButton() {
   }
 }
 
-function cycleWallet() {
-  const wallets = store.activeWallets;
-  if (!wallets.length) {
+function openWalletPicker() {
+  if (!store.activeWallets.length) {
     store.showToast('当前账本暂无可用账户，请先添加账户', 'error');
     return;
   }
-  const idx = wallets.findIndex((w) => w.id === selectedWalletId.value);
-  const next = wallets[(idx + 1) % wallets.length];
-  selectedWalletId.value = next.id;
+  walletPickerOpen.value = true;
+}
+
+function selectWallet(walletId: string) {
+  selectedWalletId.value = walletId;
+  walletPickerOpen.value = false;
 }
 
 // 水平滑动触摸控制器（AI ⇄ 支出 ⇄ 收入）
@@ -543,10 +548,21 @@ function onAiViewTx(txId: string) {
 
               <button
                 type="button"
-                class="shrink-0 text-[11px] font-medium px-2.5 py-1 rounded-full bg-[#F5F6F8] text-[#475569] hover:bg-[#ECEEF2] transition"
-                @click="cycleWallet"
+                class="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium px-2.5 py-1 rounded-full bg-[#F5F6F8] text-[#475569] hover:bg-[#ECEEF2] transition"
+                @click="openWalletPicker"
               >
                 {{ selectedWalletName }}
+                <svg
+                  class="w-3 h-3 text-[#94A3B8] shrink-0"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
               </button>
 
               <button
@@ -589,5 +605,33 @@ function onAiViewTx(txId: string) {
     />
 
     <DateTimePickerSheet v-model:open="dtPickerOpen" v-model="dateTimeModel" />
+
+    <!-- 账户选择：底部弹出账户列表（不用点一下轮换一个） -->
+    <Teleport to="body">
+      <div v-if="walletPickerOpen" class="fixed inset-0 z-[110] flex items-end justify-center">
+        <div class="absolute inset-0 bg-[#14171A]/50" @click="walletPickerOpen = false" />
+        <div
+          class="relative w-full max-w-md bg-white rounded-t-3xl px-4 pt-2 pb-6 max-h-[70vh] overflow-y-auto phone-scroll"
+        >
+          <div class="w-10 h-1 rounded-full bg-[#E6E9EF] mx-auto my-2" />
+          <p class="text-sm font-bold text-[#18181B] text-center mb-3">选择支付账户</p>
+          <button
+            v-for="w in store.activeWallets"
+            :key="w.id"
+            type="button"
+            class="w-full flex items-center justify-between px-3 py-3 rounded-xl text-sm transition"
+            :class="
+              w.id === selectedWalletId
+                ? 'bg-[#FFF6E8] text-[#DE8A1E] font-semibold'
+                : 'text-[#18181B] hover:bg-[#F5F6F8]'
+            "
+            @click="selectWallet(w.id)"
+          >
+            <span>{{ w.name }}</span>
+            <span v-if="w.id === selectedWalletId">✓</span>
+          </button>
+        </div>
+      </div>
+    </Teleport>
   </BottomSheet>
 </template>
