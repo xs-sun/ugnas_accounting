@@ -30,6 +30,7 @@ import BudgetProgressBar from '@/components/shared/BudgetProgressBar.vue';
 import CategoryBadge from '@/components/shared/CategoryBadge.vue';
 import CategoryPicker from '@/components/shared/CategoryPicker.vue';
 import CustomDropdown, { type DropdownOption } from '@/components/shared/CustomDropdown.vue';
+import DateTimePickerSheet, { type DateTimeValue } from '@/components/shared/DateTimePickerSheet.vue';
 import ToggleSwitch from '@/components/shared/ToggleSwitch.vue';
 import VerificationCodeField, { type CodeDeliveryHint } from '@/components/shared/VerificationCodeField.vue';
 
@@ -625,6 +626,22 @@ const recurringForm = reactive<{
 });
 const savingRecurring = ref(false);
 const confirmDeleteRecId = ref<string | null>(null);
+
+// 定时规则开始日期：点开底部月历选（date 模式，只要日期不要时间）。
+const startDatePickerOpen = ref(false);
+const startDateModel = computed<DateTimeValue>({
+  get: () => ({ date: recurringForm.startDate, time: '09:00' }),
+  set: (val) => {
+    recurringForm.startDate = val.date;
+  },
+});
+const startDateLabel = computed(() => {
+  const parts = (recurringForm.startDate || todayIso()).split('-');
+  if (parts.length === 3) {
+    return `${parts[0]}年${Number(parts[1])}月${Number(parts[2])}日`;
+  }
+  return recurringForm.startDate;
+});
 
 const RECURRING_CYCLES = ['每天', '每周', '每月', '每年'];
 
@@ -2122,14 +2139,14 @@ function closeSheet() {
           </div>
 
           <div class="app-card divide-y divide-[#F1F3F6] text-xs">
-            <div class="px-4 py-3 flex items-center justify-between">
+            <button
+              type="button"
+              class="w-full px-4 py-3 flex items-center justify-between"
+              @click="startDatePickerOpen = true"
+            >
               <span class="text-[#475569] font-medium">开始时间</span>
-              <input
-                v-model="recurringForm.startDate"
-                type="date"
-                class="text-right text-xs font-semibold text-[#18181B] bg-transparent outline-none"
-              />
-            </div>
+              <span class="text-xs font-semibold text-[#18181B]">{{ startDateLabel }} ›</span>
+            </button>
             <div class="px-4 py-3 flex items-center justify-between gap-2">
               <span class="text-[#475569] font-medium shrink-0">重复周期</span>
               <div class="flex gap-1">
@@ -2601,5 +2618,11 @@ function closeSheet() {
         </div>
       </div>
     </template>
+
+    <DateTimePickerSheet
+      v-model:open="startDatePickerOpen"
+      v-model="startDateModel"
+      mode="date"
+    />
   </BottomSheet>
 </template>

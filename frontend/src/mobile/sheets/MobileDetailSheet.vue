@@ -9,6 +9,7 @@ import CategoryBadge from '@/components/shared/CategoryBadge.vue';
 import CategoryPicker from '@/components/shared/CategoryPicker.vue';
 import CustomDropdown, { type DropdownOption } from '@/components/shared/CustomDropdown.vue';
 import MemberPickerSheet from '@/components/shared/MemberPickerSheet.vue';
+import DateTimePickerSheet, { type DateTimeValue } from '@/components/shared/DateTimePickerSheet.vue';
 import ToggleSwitch from '@/components/shared/ToggleSwitch.vue';
 import { resolveAvatarUrl } from '@/constants/avatars';
 
@@ -38,6 +39,24 @@ const note = ref('');
 const includeBudget = ref(true);
 const reimburse = ref(false);
 const memberId = ref('');
+
+// 日期时间选择器：日期时间行点开，底部弹出月历 + 时间滚轮。
+const dtPickerOpen = ref(false);
+const dateTimeModel = computed<DateTimeValue>({
+  get: () => ({ date: date.value, time: txTime.value }),
+  set: (val) => {
+    date.value = val.date;
+    txTime.value = val.time;
+  },
+});
+const dateTimeLabel = computed(() => {
+  const parts = (date.value || todayIso()).split('-');
+  const label =
+    parts.length === 3
+      ? `${Number(parts[1])}月${Number(parts[2])}日`
+      : date.value;
+  return `${label} · ${txTime.value}`;
+});
 const memberPickerOpen = ref(false);
 const bookMembers = computed(() => store.activeBook?.members || []);
 const selectedMember = computed(() => {
@@ -362,22 +381,14 @@ async function handleSaveBudget() {
 
       <!-- 日期、时间、账户与备注 -->
       <div class="app-card divide-y divide-[#F1F3F6] text-xs">
-        <div class="px-3.5 py-2.5 flex items-center justify-between gap-2">
-          <span class="text-[#64748B]">日期</span>
-          <input
-            v-model="date"
-            type="date"
-            class="text-right font-semibold text-[#18181B] bg-transparent outline-none"
-          />
-        </div>
-        <div class="px-3.5 py-2.5 flex items-center justify-between gap-2">
-          <span class="text-[#64748B]">时间</span>
-          <input
-            v-model="txTime"
-            type="time"
-            class="text-right font-semibold text-[#18181B] bg-transparent outline-none"
-          />
-        </div>
+        <button
+          type="button"
+          class="w-full px-3.5 py-2.5 flex items-center justify-between gap-2"
+          @click="dtPickerOpen = true"
+        >
+          <span class="text-[#64748B]">日期时间</span>
+          <span class="font-semibold text-[#18181B]">{{ dateTimeLabel }} ›</span>
+        </button>
         <div class="px-3.5 py-2.5 flex items-center justify-between gap-3">
           <span class="text-[#64748B] shrink-0">支付账户</span>
           <CustomDropdown
@@ -546,5 +557,7 @@ async function handleSaveBudget() {
       v-model="memberId"
       :members="bookMembers"
     />
+
+    <DateTimePickerSheet v-model:open="dtPickerOpen" v-model="dateTimeModel" />
   </BottomSheet>
 </template>
