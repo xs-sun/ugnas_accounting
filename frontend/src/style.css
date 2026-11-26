@@ -243,11 +243,27 @@
 .sheet-panel.sheet-keyboard-open {
   padding-bottom: 0 !important;
 }
-/* 系统键盘弹起时自定义数字小键盘没有显示的必要：藏起按键区，
-   只留金额 + 备注输入框 + 元数据胶囊，紧贴在系统键盘上方。
-   BottomSheet 在键盘打开时给面板加 .sheet-keyboard-open。 */
+/* 数字小键盘按键区：平时 4 行高约 180px；系统键盘弹起或备注输入框
+   聚焦时平滑收起，只留金额 + 备注输入框 + 元数据胶囊紧贴键盘上方。
+   收起走 max-height/opacity 过渡而不用 display:none——后者让面板
+   瞬间跳变，看起来卡顿；焦点驱动（.keypad-editing）在点输入框的
+   瞬间就收起，不用等 visualViewport 缩完，解决“有时候没隐藏”；
+   .sheet-keyboard-open 是兜底（键盘开了但焦点不在小键盘里时）。 */
+.keypad-keys {
+  max-height: 200px;
+  overflow: hidden;
+  transition:
+    max-height 0.28s ease,
+    opacity 0.22s ease,
+    padding 0.28s ease;
+}
+.keypad-editing .keypad-keys,
 .sheet-panel.sheet-keyboard-open .keypad-keys {
-  display: none;
+  max-height: 0;
+  opacity: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  pointer-events: none;
 }
 .sheet-drag-handle {
   cursor: grab;

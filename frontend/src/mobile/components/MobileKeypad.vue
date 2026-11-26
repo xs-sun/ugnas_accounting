@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { evalSimpleExpr } from '@/utils/format';
 
 const props = withDefaults(
@@ -26,6 +26,29 @@ const emit = defineEmits<{
 const evaluatedAmount = computed(() => evalSimpleExpr(props.modelValue));
 
 const hasOperator = computed(() => /[+\-]/.test(props.modelValue));
+
+// 备注输入框聚焦时按键区收起：焦点驱动在点输入框的瞬间就反应，
+// 不用等 visualViewport 缩完才隐藏，解决“有时候键盘弹了小键盘还在”；
+// 视觉收起走 CSS 过渡（见 style.css），不直接 display:none。
+const editing = ref(false);
+const rootRef = ref<HTMLElement | null>(null);
+
+function onKeypadFocusIn(e: FocusEvent) {
+  const t = e.target;
+  if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) {
+    editing.value = true;
+  }
+}
+
+function onKeypadFocusOut() {
+  window.setTimeout(() => {
+    const ae = document.activeElement;
+    const stillEditing =
+      rootRef.value?.contains(ae) &&
+      (ae instanceof HTMLInputElement || ae instanceof HTMLTextAreaElement);
+    if (!stillEditing) editing.value = false;
+  }, 80);
+}
 
 const displayAmountText = computed(() => {
   if (!props.modelValue) return '0.00';
@@ -110,7 +133,11 @@ function pressKey(key: string) {
 
 <template>
   <div
+    ref="rootRef"
     class="shrink-0 bg-white border-t border-[#ECEEF2] rounded-t-[24px] px-4 pt-3 pb-4 shadow-[0_-6px_20px_rgba(15,23,42,0.04)]"
+    :class="{ 'keypad-editing': editing }"
+    @focusin="onKeypadFocusIn"
+    @focusout="onKeypadFocusOut"
   >
     <!-- 金额大字展示 + 算式预览 + 右侧备注插槽 -->
     <div

@@ -277,7 +277,10 @@ function tapWheelItem(kind: 'hour' | 'minute', index: number) {
                 background: linear-gradient(to top, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0));
               "
             />
-            <div class="h-full flex items-stretch justify-center gap-2">
+            <!-- 滚轮列要 relative + z-index 浮在高亮带之上：高亮带是 absolute
+              定位的不透明色块，会盖住静态定位的滚轮列，导致选中的一行
+              文字完全看不见；上下渐变遮罩保持 z-10，继续淡化非选中行。 -->
+            <div class="relative z-[5] h-full flex items-stretch justify-center gap-2">
               <div
                 ref="hourCol"
                 class="w-20 h-full overflow-y-auto phone-scroll snap-y snap-mandatory"
