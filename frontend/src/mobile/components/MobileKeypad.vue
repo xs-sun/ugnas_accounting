@@ -43,6 +43,15 @@ function getCurrentNumberSegment(expr: string): string {
 
 function pressKey(key: string) {
   if (props.submitting) return;
+  // 按键轻震一下，模拟系统键盘的手感；不支持震动的设备（iOS WebView
+  // 没有 Vibration API）直接忽略，不报错也不影响输入。
+  try {
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      navigator.vibrate(10);
+    }
+  } catch {
+    /* ignore */
+  }
   const cur = props.modelValue || '';
 
   if (key === 'BACK') {
