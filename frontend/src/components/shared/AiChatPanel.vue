@@ -2160,11 +2160,12 @@ onBeforeUnmount(() => {
           ×
         </button>
 
-        <!-- 悬浮胶囊：识别文字（底部居中） -->
+        <!-- 悬浮胶囊：识别文字（底部居中）。深色半透明底 + 白字：
+          之前白字配 15% 白底，在白色账单图上根本看不清。 -->
         <button
           v-if="!showOcrText"
           type="button"
-          class="absolute left-1/2 -translate-x-1/2 px-4 py-2 rounded-full bg-white/15 backdrop-blur text-white text-xs font-medium"
+          class="absolute left-1/2 -translate-x-1/2 px-4 py-2 rounded-full bg-black/45 backdrop-blur text-white text-xs font-medium"
           :style="{ bottom: 'max(24px, env(safe-area-inset-bottom, 0px))' }"
           @click.stop="showOcrText = true"
         >

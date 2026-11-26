@@ -3,7 +3,7 @@ import { ref, computed, nextTick, onMounted } from 'vue';
 import { api } from '@/api/client';
 import { DEFAULT_MASCOT, MASCOT_FALLBACK } from '@/constants/avatars';
 import { useAppStore } from '@/stores/useAppStore';
-import type { Transaction } from '@/types';
+import type { Book, Transaction } from '@/types';
 import type { InviteSheetView, MobileTab, RecordInitialMode, SubpageType } from './types';
 
 import MobileRecordsView from './views/MobileRecordsView.vue';
@@ -35,6 +35,31 @@ const recordPrefillDate = ref('');
 
 // 账本抽屉状态
 const ledgerSheetOpen = ref(false);
+
+// 账本下拉菜单状态：点顶栏账本胶囊弹出紧凑列表选账本，
+// 比打开整个“账本管理与共享”抽屉轻；管理/新建仍走抽屉。
+const ledgerMenuOpen = ref(false);
+const switchingLedgerId = ref('');
+
+async function selectLedger(book: Book) {
+  if (switchingLedgerId.value) return;
+  ledgerMenuOpen.value = false;
+  if (book.id === store.activeBookId) return;
+  switchingLedgerId.value = book.id;
+  try {
+    await store.switchBook(book.id);
+    store.showToast(`已切换至「${book.name}」`, 'success');
+  } catch (err: any) {
+    store.showToast(err?.message || '切换账本失败', 'error');
+  } finally {
+    switchingLedgerId.value = '';
+  }
+}
+
+function openLedgerManage() {
+  ledgerMenuOpen.value = false;
+  ledgerSheetOpen.value = true;
+}
 
 // 成员邀请抽屉状态
 const inviteSheetOpen = ref(false);
@@ -169,30 +194,96 @@ onMounted(() => {
       v-if="!store.authRequired"
       class="fixed top-0 left-0 right-0 z-20 top-fade-mask pt-safe pb-3 pointer-events-none"
     >
-      <header class="px-4 pt-2.5 flex items-center justify-between gap-2 pointer-events-auto">
-        <!-- 左侧：当前账本名 + 下拉箭头 -->
-        <button
-          type="button"
-          class="glass-top-pill flex items-center gap-2 pl-2.5 pr-3 py-1.5 rounded-full hover:bg-white transition min-w-0 max-w-[66%]"
-          @click="ledgerSheetOpen = true"
-        >
-          <span
-            class="w-2.5 h-2.5 rounded-full shrink-0"
-            :style="{ backgroundColor: store.activeBook?.color || '#DE8A1E' }"
-          />
-          <span class="text-[13px] font-semibold text-[#18181B] truncate">
-            {{ store.activeBook?.name || '七猫账本' }}
-          </span>
-          <svg
-            class="w-3.5 h-3.5 text-[#64748B] shrink-0"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2.2"
+      <!-- 下拉菜单打开时盖住主内容的透明层：点空白处收起菜单 -->
+      <div
+        v-if="ledgerMenuOpen"
+        class="fixed inset-0 z-[5] pointer-events-auto"
+        @click="ledgerMenuOpen = false"
+      />
+      <header class="relative z-10 px-4 pt-2.5 flex items-center justify-between gap-2 pointer-events-auto">
+        <!-- 左侧：当前账本名 + 下拉箭头（点开紧凑下拉列表选账本） -->
+        <div class="relative min-w-0 max-w-[66%]">
+          <button
+            type="button"
+            class="glass-top-pill flex items-center gap-2 pl-2.5 pr-3 py-1.5 rounded-full hover:bg-white transition min-w-0 w-full"
+            @click="ledgerMenuOpen = !ledgerMenuOpen"
           >
-            <path d="M6 9l6 6 6-6" />
-          </svg>
-        </button>
+            <span
+              class="w-2.5 h-2.5 rounded-full shrink-0"
+              :style="{ backgroundColor: store.activeBook?.color || '#DE8A1E' }"
+            />
+            <span class="text-[13px] font-semibold text-[#18181B] truncate">
+              {{ store.activeBook?.name || '七猫账本' }}
+            </span>
+            <svg
+              class="w-3.5 h-3.5 text-[#64748B] shrink-0 transition-transform"
+              :class="{ 'rotate-180': ledgerMenuOpen }"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+            >
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+
+          <!-- 账本下拉列表 -->
+          <div
+            v-if="ledgerMenuOpen"
+            class="absolute left-0 top-[calc(100%+8px)] z-20 w-[264px] max-w-[78vw] max-h-[60vh] overflow-y-auto phone-scroll rounded-2xl bg-white shadow-xl border border-[#ECEEF2] p-1.5"
+          >
+            <div v-if="store.books.length === 0" class="px-3 py-2.5 text-xs text-[#94A3B8]">
+              暂无账本
+            </div>
+            <button
+              v-for="book in store.books"
+              :key="book.id"
+              type="button"
+              class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl text-left transition hover:bg-[#F8F9FB]"
+              :disabled="switchingLedgerId === book.id"
+              @click="selectLedger(book)"
+            >
+              <span
+                class="w-2.5 h-2.5 rounded-full shrink-0"
+                :style="{ backgroundColor: book.color || '#DE8A1E' }"
+              />
+              <span class="flex-1 min-w-0 text-[13px] font-medium text-[#18181B] truncate">
+                {{ book.name }}
+              </span>
+              <svg
+                v-if="book.id === store.activeBookId"
+                class="w-4 h-4 text-[#DE8A1E] shrink-0"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M20 6L9 17l-5-5" />
+              </svg>
+            </button>
+            <div class="h-px bg-[#F1F3F6] my-1" />
+            <button
+              type="button"
+              class="w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-left text-[13px] font-medium text-[#475569] transition hover:bg-[#F8F9FB]"
+              @click="openLedgerManage"
+            >
+              管理账本
+              <svg
+                class="w-3.5 h-3.5 text-[#94A3B8]"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="m9 6 6 6-6 6" />
+              </svg>
+            </button>
+          </div>
+        </div>
 
         <!-- 右侧：搜索与隐私眼睛胶囊 -->
         <div class="glass-top-pill flex items-center gap-0.5 p-1 rounded-full shrink-0">
