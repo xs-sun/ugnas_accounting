@@ -32,6 +32,7 @@ export const ICON_LIBRARY: Record<string, string> = {
   trend: '<path d="M4.5 17.5l4.8-4.8 3.6 3 6.6-7.7v9.5h-15z" fill="currentColor" fill-opacity="0.16"/><path d="M4.5 16.5l4.8-4.8 3.6 3 6.6-7.7"/><path d="M15.5 7h4v4"/>',
   refund: '<circle cx="12" cy="12" r="8" fill="currentColor" fill-opacity="0.14"/><path d="M7.5 10.5h7a3.5 3.5 0 1 1 0 7H10"/><path d="M10.5 7.5l-3 3 3 3"/>',
   tag: '<path d="M4.5 11.5V5.8A1.3 1.3 0 0 1 5.8 4.5h5.7l8 8-7 7-8-8z" fill="currentColor" fill-opacity="0.16"/><path d="M4.5 11.5V5.8A1.3 1.3 0 0 1 5.8 4.5h5.7l8 8-7 7-8-8z"/><circle cx="8.5" cy="8.5" r="1.1" fill="currentColor"/>',
+  shield: '<path d="M12 3l7 2.8v5.2c0 4.8-3 7.8-7 9-4-1.2-7-4.2-7-9V5.8L12 3z" fill="currentColor" fill-opacity="0.16"/><path d="M12 3l7 2.8v5.2c0 4.8-3 7.8-7 9-4-1.2-7-4.2-7-9V5.8L12 3z"/><path d="M9 11.5l2 2 4-4.5"/>',
 };
 
 export const PICKABLE_ICONS: string[] = [
@@ -39,7 +40,7 @@ export const PICKABLE_ICONS: string[] = [
   'bag', 'cart', 'shirt', 'laptop', 'sparkles', 'train',
   'car', 'fuel', 'plane', 'home', 'bolt', 'wifi',
   'film', 'gamepad', 'dumbbell', 'compass', 'medkit', 'book',
-  'paw', 'gift', 'wallet', 'star', 'trend', 'tag',
+  'paw', 'gift', 'wallet', 'star', 'trend', 'tag', 'shield',
 ];
 
 export function getIconSvg(iconId?: string): string {

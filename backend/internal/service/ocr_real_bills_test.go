@@ -122,8 +122,8 @@ P图 8
 		merchant: "直马勒MAHLE京东自营旗舰店",
 		wallet:   "银行卡",
 		source:   "jd",
-		category: "购物",
-		sub:      "日用品",
+		category: "交通",
+		sub:      "车辆保养",
 	},
 	{
 		name: "wechat-jd",

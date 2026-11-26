@@ -184,6 +184,14 @@ func main() {
 	settingsRepo := repository.NewSettingsRepo(db, dataDir)
 	aiChatRepo := repository.NewAiChatRepo(db)
 
+	// 预置分类只在建账本时写入，老账本拿不到后来新增的分类
+	//（比如交通/车辆保养、交通/车险）；启动时补一次，缺失才插。
+	if added, err := catRepo.EnsurePresetCategories(context.Background()); err != nil {
+		log.Printf("[WARN] 补齐预置分类失败: %v", err)
+	} else if added > 0 {
+		log.Printf("[INFO] 已补齐 %d 个预置分类", added)
+	}
+
 	// Initialize Services
 	snapshotService := service.NewSnapshotService(db, snapshotRepo, dataDir)
 	importService := service.NewImportService(db, txRepo, catRepo, walletRepo)

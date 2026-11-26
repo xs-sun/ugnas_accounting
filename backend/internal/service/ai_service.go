@@ -204,6 +204,12 @@ var billSubCategoryAliases = map[string][2]string{
 	"充电器":  {"购物", "数码家电"},
 	"平板":   {"购物", "数码家电"},
 	"电脑":   {"购物", "数码家电"},
+	"汽车保养": {"交通", "车辆保养"},
+	"机油":   {"交通", "车辆保养"},
+	"滤芯":   {"交通", "车辆保养"},
+	"轮胎":   {"交通", "车辆保养"},
+	"汽车保险": {"交通", "车险"},
+	"交强险":  {"交通", "车险"},
 }
 
 func (s *AiService) resolveCategoryMatch(ctx context.Context, bookID, txType, catHint, subHint string) (catID, catName, subName, icon, color, bgColor string) {
@@ -360,12 +366,18 @@ func inferCategoryHintFromText(text string, isIncome bool) (catName, subName str
 		return "餐饮", "午餐"
 	case containsAny(text, "晚餐", "晚饭", "火锅", "聚餐", "吃饭", "餐厅"):
 		return "餐饮", "聚餐"
+	case containsAny(text, "夜宵", "宵夜"):
+		return "餐饮", "夜宵"
 	case containsAny(text, "地铁", "公交"):
 		return "交通", "地铁公交"
 	case containsAny(text, "打车", "滴滴", "出租"):
 		return "交通", "打车出行"
 	case containsAny(text, "高铁", "机票", "火车"):
 		return "交通", "高铁机票"
+	case containsAny(text, "车险", "交强险", "三者险", "车损险"):
+		return "交通", "车险"
+	case containsAny(text, "机油", "滤芯", "轮胎", "刹车", "洗车", "年检", "4S", "4s", "补胎") || (strings.Contains(text, "保养") && !containsAny(text, "护肤", "保养品", "皮肤", "面膜")):
+		return "交通", "车辆保养"
 	case containsAny(text, "加油", "停车", "中海油", "中石油", "中石化"):
 		return "交通", "加油停车"
 	case containsAny(text, "电影", "演出"):
@@ -374,12 +386,16 @@ func inferCategoryHintFromText(text string, isIncome bool) (catName, subName str
 		return "娱乐", "游戏充值"
 	case containsAny(text, "健身", "运动"):
 		return "娱乐", "运动健身"
+	case containsAny(text, "爱奇艺", "腾讯视频", "优酷", "芒果TV", "哔哩哔哩", "B站", "网易云", "QQ音乐", "酷狗", "喜马拉雅"):
+		return "娱乐", "影音会员"
 	case containsAny(text, "房租", "物业"):
 		return "居家", "房租物业"
 	case containsAny(text, "水电", "燃气", "电费", "水费"):
 		return "居家", "水电燃气"
 	case containsAny(text, "宽带", "话费"):
 		return "居家", "宽带话费"
+	case containsAny(text, "沙发", "衣柜", "床垫", "电视", "冰箱", "洗衣机", "空调"):
+		return "居家", "家具家电"
 	case containsAny(text, "药", "医院", "体检"):
 		return "医疗", "药品购置"
 	case containsAny(text, "书籍", "买书", "书店", "本书", "看书", "课程", "学习", "培训"):

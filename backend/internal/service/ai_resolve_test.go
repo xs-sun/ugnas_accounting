@@ -31,6 +31,14 @@ func TestResolveCategoryMatch(t *testing.T) {
 		{"sub not under parent is dropped", "餐饮", "不存在的二级", "餐饮", "", true},
 		// 只有二级能对上：由二级反推一级。
 		{"sub alone determines parent", "不存在的一级", "午餐", "餐饮", "午餐", true},
+		// 新增的二级分类：真实存在，直接通过。
+		{"new sub resolves", "交通", "车辆保养", "交通", "车辆保养", true},
+		{"new sub resolves car insurance", "交通", "车险", "交通", "车险", true},
+		// 模型自造的车险/保养说法：映射到真实分类。
+		{"alias car insurance maps", "交通", "交强险", "交通", "车险", true},
+		{"alias car maintenance maps", "交通", "汽车保养", "交通", "车辆保养", true},
+		// 真实的二级优先于给错的一级：车险属于交通，不是购物。
+		{"real car sub wins over wrong parent", "购物", "车险", "交通", "车险", true},
 		// 没有任何提示：沿用第一个一级分类。
 		{"no hints falls back to first parent", "", "", "餐饮", "", true},
 		// 提示存在但一个都对不上：如实返回提示名、不选分类，不要默认成餐饮。
@@ -52,6 +60,31 @@ func TestResolveCategoryMatch(t *testing.T) {
 				t.Errorf("expected no category id, got %q", catID)
 			}
 		})
+	}
+}
+
+// 2026-11-26 Justin 反馈：马勒滤芯（车辆保养）被分到加油停车/日用品，
+// 车险也没有分类。关键词提示必须先于“买/京东”这类兜底规则命中。
+func TestInferCategoryHintFromText(t *testing.T) {
+	cases := []struct {
+		text    string
+		wantCat string
+		wantSub string
+	}{
+		{"马勒（MAHLE）滤芯套", "交通", "车辆保养"},
+		{"4S店保养换机油", "交通", "车辆保养"},
+		{"车险 交强险", "交通", "车险"},
+		{"中海油加油", "交通", "加油停车"},
+		{"爱奇艺会员", "娱乐", "影音会员"},
+		{"买沙发", "居家", "家具家电"},
+		{"夜宵烧烤", "餐饮", "夜宵"},
+		// “保养”在护肤语境里不是车辆保养。
+		{"护肤品保养套装", "其他", "临时支出"},
+	}
+	for _, tc := range cases {
+		if cat, sub := inferCategoryHintFromText(tc.text, false); cat != tc.wantCat || sub != tc.wantSub {
+			t.Errorf("inferCategoryHintFromText(%q) = %q/%q, want %q/%q", tc.text, cat, sub, tc.wantCat, tc.wantSub)
+		}
 	}
 }
 
