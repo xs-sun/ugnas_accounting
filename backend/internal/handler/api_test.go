@@ -679,7 +679,10 @@ func TestRecurringAiAdminAndSchedulers(t *testing.T) {
 	wallets, _ := env.walletRepo.ListWallets(context.Background(), bookID, false)
 
 	// Recurring CRUD + Toggle + Scheduler execution
+	// next_date 用昨天：已逾期的规则立即补记，不受“当天 9 点才入账”的门限制
+	//（当天到期的规则在 9 点前不入账，见 service.TestShouldPostRule）
 	today := time.Now().Format("2006-01-02")
+	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
 	rr, resp := doJSONReq(t, env.handler, http.MethodPost, "/api/v1/recurring", map[string]interface{}{
 		"book_id":     bookID,
 		"type":        "expense",
@@ -687,8 +690,8 @@ func TestRecurringAiAdminAndSchedulers(t *testing.T) {
 		"title":       "每月房租",
 		"amount":      185000,
 		"cycle":       "每月",
-		"start_date":  today,
-		"next_date":   today,
+		"start_date":  yesterday,
+		"next_date":   yesterday,
 		"wallet_id":   wallets[0].ID,
 	}, adminH)
 	if rr.Code != http.StatusCreated {
