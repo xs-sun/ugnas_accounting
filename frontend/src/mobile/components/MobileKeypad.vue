@@ -43,6 +43,15 @@ function getCurrentNumberSegment(expr: string): string {
 
 function pressKey(key: string) {
   if (props.submitting) return;
+  // 按键轻震一下，模拟系统键盘的手感；不支持震动的设备（iOS WebView
+  // 没有 Vibration API）直接忽略，不报错也不影响输入。
+  try {
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      navigator.vibrate(10);
+    }
+  } catch {
+    /* ignore */
+  }
   const cur = props.modelValue || '';
 
   if (key === 'BACK') {
@@ -133,7 +142,7 @@ function pressKey(key: string) {
     <slot name="meta" />
 
     <!-- 4x4 计算器小键盘：7-9/⌫, 4-6/+, 1-3/-, 再记/0/./完成 -->
-    <div class="grid grid-cols-4 gap-1.5 pt-0.5 select-none">
+    <div class="keypad-keys grid grid-cols-4 gap-1.5 pt-0.5 select-none">
       <button
         type="button"
         class="key-btn h-10 rounded-xl bg-[#F5F6F8] text-[15px] font-semibold text-[#18181B] transition"

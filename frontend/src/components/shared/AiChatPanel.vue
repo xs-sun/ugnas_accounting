@@ -93,6 +93,7 @@ function onSelectDraftMember(userId: string) {
 
 // OCR 查看器：点上传的图片，看原图 + 本地 OCR 认出的文字。
 const ocrViewer = ref<{ image: string; text: string; label: string } | null>(null);
+const showOcrText = ref(false);
 const voiceMode = ref<VoiceCaptureMode>('speech');
 const holdTarget = ref<HoldActionZone>('send');
 const voiceStatusText = ref('松手 发语音');const voiceErrorText = ref('');
@@ -280,6 +281,7 @@ const calCells = computed(() => {
 function openOcrViewer(msg: AiChatMessage) {
   if (!msg.image) return;
   ocrViewer.value = { image: msg.image, text: msg.ocrText || '', label: msg.imageLabel || '账单图片' };
+  showOcrText.value = false;
 }
 
 function closeOcrViewer() {
@@ -2133,29 +2135,60 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- OCR 查看器：原图 + 识别文字。
+    <!-- OCR 查看器：图片全屏显示，没有顶部标题栏占地方；关闭和识别文字
+      是悬浮在图片上的胶囊按钮。点图片空白处关闭，点“识别文字”从底部
+      弹出识别结果面板，再点一次收起。
       用 Teleport 挂到 body 上：记账页是底部弹出层，里面的 fixed 定位会被
       弹出层的 transform 限制，盖不住整屏；挂到 body 上才是真正的全屏预览。 -->
     <Teleport to="body">
       <div
         v-if="ocrViewer"
-        class="fixed inset-0 z-[100] bg-[#14171A] flex flex-col"
+        class="fixed inset-0 z-[100] bg-[#14171A]"
         @click="closeOcrViewer"
       >
-        <div class="flex items-center justify-between px-4 pt-12 pb-2 text-white shrink-0">
-          <span class="text-sm font-semibold truncate">{{ ocrViewer.label }}</span>
-          <button
-            type="button"
-            class="w-8 h-8 shrink-0 rounded-full bg-white/15 text-lg leading-none"
-            @click="closeOcrViewer"
-          >
-            ×
-          </button>
+        <div class="absolute inset-0 flex items-center justify-center">
+          <img :src="ocrViewer.image" alt="账单图片" class="max-h-full max-w-full object-contain" />
         </div>
-        <div class="flex-1 overflow-y-auto px-4 pb-8 space-y-3 phone-scroll" @click.stop>
-          <img :src="ocrViewer.image" alt="账单图片" class="w-full rounded-2xl" />
-          <div class="bg-white rounded-2xl p-3">
-            <p class="text-[11px] font-semibold text-[#94A3B8] mb-1.5">OCR 识别文字</p>
+
+        <!-- 悬浮胶囊：关闭（右上，避开状态栏） -->
+        <button
+          type="button"
+          class="absolute top-12 right-4 w-9 h-9 rounded-full bg-black/40 backdrop-blur text-white text-xl leading-none flex items-center justify-center"
+          aria-label="关闭图片预览"
+          @click.stop="closeOcrViewer"
+        >
+          ×
+        </button>
+
+        <!-- 悬浮胶囊：识别文字（底部居中） -->
+        <button
+          v-if="!showOcrText"
+          type="button"
+          class="absolute left-1/2 -translate-x-1/2 px-4 py-2 rounded-full bg-white/15 backdrop-blur text-white text-xs font-medium"
+          :style="{ bottom: 'max(24px, env(safe-area-inset-bottom, 0px))' }"
+          @click.stop="showOcrText = true"
+        >
+          识别文字
+        </button>
+
+        <!-- 识别结果面板：底部弹出，可滚动 -->
+        <div
+          v-if="showOcrText"
+          class="absolute inset-x-0 bottom-0 bg-white rounded-t-3xl max-h-[45vh] flex flex-col"
+          @click.stop
+        >
+          <div class="w-10 h-1 rounded-full bg-[#E6E9EF] mx-auto mt-2 shrink-0" />
+          <div class="flex items-center justify-between px-4 py-2 shrink-0">
+            <p class="text-sm font-bold text-[#18181B]">OCR 识别文字</p>
+            <button
+              type="button"
+              class="text-xs font-medium text-[#64748B] px-2 py-1"
+              @click="showOcrText = false"
+            >
+              收起
+            </button>
+          </div>
+          <div class="px-4 pb-6 overflow-y-auto phone-scroll">
             <p
               v-if="ocrViewer.text"
               class="text-xs leading-relaxed text-[#18181B] whitespace-pre-wrap break-words"

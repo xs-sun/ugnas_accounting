@@ -88,12 +88,12 @@ function selectSubCategory(subName: string) {
 
 <template>
   <div class="space-y-2.5">
-    <div v-if="sortedTree.length > 0" class="grid gap-y-2.5 gap-x-1" :class="gridClass">
+    <div v-if="sortedTree.length > 0" class="grid gap-y-1 gap-x-1" :class="gridClass">
       <button
         v-for="cat in sortedTree"
         :key="cat.id"
         type="button"
-        class="flex flex-col items-center gap-1 py-1.5 px-0.5 rounded-2xl transition"
+        class="flex flex-col items-center gap-0.5 py-1 px-0.5 rounded-2xl transition"
         :class="
           activeCategory?.id === cat.id
             ? 'bg-white shadow-xs ring-1 ring-[#DE8A1E]/45'
@@ -105,7 +105,7 @@ function selectSubCategory(subName: string) {
           :icon="cat.icon"
           :color="cat.color"
           :bg-color="cat.bg_color || '#FFF6E8'"
-          size="md"
+          size="sm"
           :selected="activeCategory?.id === cat.id"
         />
         <span
@@ -121,10 +121,11 @@ function selectSubCategory(subName: string) {
       </button>
     </div>
 
-    <!-- 二级分类：自动换行，最多显示两行，超出可上下滚动 -->
+    <!-- 二级分类：自动换行，两行完整显示（max-h 要含上边 pt-2.5 的 10px，
+      否则第二行会被裁掉一半还出现滚动条）；三行以上才滚动 -->
     <div
       v-if="subCategories.length > 0 && activeCategory"
-      class="pt-2.5 border-t border-[#F1F3F6] flex flex-wrap items-center gap-1.5 overflow-y-auto phone-scroll max-h-[62px]"
+      class="pt-2.5 border-t border-[#F1F3F6] flex flex-wrap items-center gap-1.5 overflow-y-auto phone-scroll max-h-[74px]"
     >
       <button
         v-for="sub in subCategories"
