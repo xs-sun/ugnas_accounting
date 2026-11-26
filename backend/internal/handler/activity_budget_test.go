@@ -350,11 +350,13 @@ func TestActivityImportAndRecurring(t *testing.T) {
 		t.Fatalf("import activity summary empty")
 	}
 
-	// D6：定时规则到点入账
+	// D6：定时规则到点入账（next_date 用昨天：已逾期的规则立即补记，
+	// 不受“当天 9 点才入账”的门限制；当天到期的规则在 9 点前不入账，
+	// 见 service.TestShouldPostRule）
 	rr, _ = doJSONReq(t, env.handler, http.MethodPost, "/api/v1/recurring", map[string]interface{}{
 		"book_id": bookID, "type": "expense", "title": "房租", "amount": 300000,
-		"cycle": "每月", "start_date": time.Now().Format("2006-01-02"),
-		"next_date": time.Now().Format("2006-01-02"), "wallet_id": walletID,
+		"cycle": "每月", "start_date": time.Now().AddDate(0, 0, -1).Format("2006-01-02"),
+		"next_date": time.Now().AddDate(0, 0, -1).Format("2006-01-02"), "wallet_id": walletID,
 	}, authHeaders(aliceToken))
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create recurring rule failed: %d %s", rr.Code, rr.Body.String())

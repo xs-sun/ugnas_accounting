@@ -6,10 +6,38 @@ import (
 	"log"
 	"strings"
 	"time"
+	_ "time/tzdata" // 内嵌时区库：容器里也可能没有系统 zoneinfo，Asia/Shanghai 必须能加载
 
 	"com.xsguyu.accounting/backend/internal/model"
 	"com.xsguyu.accounting/backend/internal/repository"
 )
+
+// 定时入账的执行时刻：北京时间 9:00。规则本身只有日期没有时间，
+// 流水上显示的 09:00 是写死的；以前调度器只比日期，过了午夜就入账，
+// 所以一条“今天到期”的规则会在凌晨 0 点就被记上。
+const recurringExecHour = 9
+
+var beijingLoc = func() *time.Location {
+	if loc, err := time.LoadLocation("Asia/Shanghai"); err == nil {
+		return loc
+	}
+	return time.Local
+}()
+
+// shouldPostRule 判断一条到期规则现在该不该入账（now 已换算成北京时间）：
+// next_date < 今天 → 已逾期（比如 NAS 关机几天），直接补记；
+// next_date == 今天 → 只有到了当天 9:00 才入账；
+// next_date > 今天 → 还没到期（正常情况下 ListDueRules 不会返回这种）。
+func shouldPostRule(r model.RecurringRule, now time.Time) bool {
+	today := now.Format("2006-01-02")
+	if r.NextDate < today {
+		return true
+	}
+	if r.NextDate > today {
+		return false
+	}
+	return now.Hour() >= recurringExecHour
+}
 
 type RecurringScheduler struct {
 	recurringRepo *repository.RecurringRepo
@@ -53,7 +81,9 @@ func ComputeNextDate(dateStr, cycle string) string {
 }
 
 func (s *RecurringScheduler) RunOnce(ctx context.Context) int {
-	today := time.Now().Format("2006-01-02")
+	// “今天”和“9 点”都按北京时间算，不依赖 NAS 的系统时区设置。
+	now := time.Now().In(beijingLoc)
+	today := now.Format("2006-01-02")
 	rules, err := s.recurringRepo.ListDueRules(ctx, today)
 	if err != nil {
 		log.Printf("[WARN] RecurringScheduler ListDueRules error: %v", err)
@@ -62,6 +92,9 @@ func (s *RecurringScheduler) RunOnce(ctx context.Context) int {
 
 	executed := 0
 	for _, r := range rules {
+		if !shouldPostRule(r, now) {
+			continue
+		}
 		if r.Amount <= 0 || r.WalletID == "" {
 			continue
 		}
