@@ -243,6 +243,12 @@
 .sheet-panel.sheet-keyboard-open {
   padding-bottom: 0 !important;
 }
+/* 系统键盘弹起时自定义数字小键盘没有显示的必要：藏起按键区，
+   只留金额 + 备注输入框 + 元数据胶囊，紧贴在系统键盘上方。
+   BottomSheet 在键盘打开时给面板加 .sheet-keyboard-open。 */
+.sheet-panel.sheet-keyboard-open .keypad-keys {
+  display: none;
+}
 .sheet-drag-handle {
   cursor: grab;
   touch-action: none;

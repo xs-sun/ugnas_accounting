@@ -133,7 +133,7 @@ function pressKey(key: string) {
     <slot name="meta" />
 
     <!-- 4x4 计算器小键盘：7-9/⌫, 4-6/+, 1-3/-, 再记/0/./完成 -->
-    <div class="grid grid-cols-4 gap-1.5 pt-0.5 select-none">
+    <div class="keypad-keys grid grid-cols-4 gap-1.5 pt-0.5 select-none">
       <button
         type="button"
         class="key-btn h-10 rounded-xl bg-[#F5F6F8] text-[15px] font-semibold text-[#18181B] transition"
