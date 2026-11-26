@@ -9,7 +9,7 @@ import MobileKeypad from '../components/MobileKeypad.vue';
 import AiChatPanel from '@/components/shared/AiChatPanel.vue';
 import CategoryPicker from '@/components/shared/CategoryPicker.vue';
 import MemberPickerSheet from '@/components/shared/MemberPickerSheet.vue';
-import ToggleSwitch from '@/components/shared/ToggleSwitch.vue';
+import DateTimePickerSheet, { type DateTimeValue } from '@/components/shared/DateTimePickerSheet.vue';
 import { resolveAvatarUrl } from '@/constants/avatars';
 
 const props = withDefaults(
@@ -49,8 +49,17 @@ const txTime = ref(nowTimeHm());
 const selectedWalletId = ref('');
 const includeBudget = ref(true);
 const reimburse = ref(false);
-const showMoreMeta = ref(false);
 const submitting = ref(false);
+
+// 日期时间选择器：金额下方的日期胶囊点开，底部弹出月历 + 时间滚轮。
+const dtPickerOpen = ref(false);
+const dateTimeModel = computed<DateTimeValue>({
+  get: () => ({ date: txDate.value, time: txTime.value }),
+  set: (val) => {
+    txDate.value = val.date;
+    txTime.value = val.time;
+  },
+});
 
 // 归属成员：默认是我（每次打开记账页都回到我），可点右上角切换为其他真实/虚拟成员。
 const memberId = ref('');
@@ -85,21 +94,6 @@ const selectedWalletName = computed(() => {
   return found?.name || store.activeWallets[0]?.name || '选择账户';
 });
 
-// 生成最近 4 天的快捷日期列表（供点击胶囊快速轮换）
-const quickDates = computed(() => {
-  const base = props.prefillDate ? new Date(`${props.prefillDate}T12:00:00`) : new Date();
-  const anchor = Number.isNaN(base.getTime()) ? new Date() : base;
-  const list: Array<{ iso: string; label: string }> = [];
-  for (let i = 0; i < 4; i += 1) {
-    const d = new Date(anchor);
-    d.setDate(anchor.getDate() - i);
-    const iso = todayIso(d);
-    const label = `${d.getMonth() + 1}月${d.getDate()}日`;
-    list.push({ iso, label });
-  }
-  return list;
-});
-
 const datePillLabel = computed(() => {
   const iso = txDate.value || todayIso();
   const parts = iso.split('-');
@@ -116,7 +110,6 @@ function resetManualFormForOpen() {
   txTime.value = nowTimeHm();
   includeBudget.value = true;
   reimburse.value = false;
-  showMoreMeta.value = false;
 
   if (
     !selectedWalletId.value ||
@@ -175,14 +168,6 @@ function switchManualButton() {
   if (slideIndex.value === 0) {
     slideIndex.value = 1;
   }
-}
-
-function cycleQuickDate() {
-  const list = quickDates.value;
-  if (!list.length) return;
-  const idx = list.findIndex((item) => item.iso === txDate.value);
-  const next = list[(idx + 1) % list.length];
-  txDate.value = next.iso;
 }
 
 function cycleWallet() {
@@ -516,7 +501,7 @@ function onAiViewTx(txId: string) {
           </button>
         </div>
 
-        <!-- 分类选择 + 可展开更多日期时间设置 -->
+        <!-- 分类选择 -->
         <div class="flex-1 min-h-0 overflow-y-auto phone-scroll px-4 pb-2 space-y-2.5">
           <div class="bg-white border border-[#ECEEF2] rounded-2xl p-3" data-no-swipe>
             <CategoryPicker
@@ -526,50 +511,6 @@ function onAiViewTx(txId: string) {
               :tree="categoryTree"
               :columns="5"
             />
-          </div>
-
-          <div
-            v-if="showMoreMeta"
-            class="bg-white border border-[#ECEEF2] rounded-2xl divide-y divide-[#F1F3F6] text-xs"
-            data-no-swipe
-          >
-            <div class="px-3.5 py-2.5 flex items-center justify-between gap-2">
-              <span class="text-[#64748B]">记账日期</span>
-              <input
-                v-model="txDate"
-                type="date"
-                class="text-right text-xs font-semibold text-[#18181B] bg-transparent outline-none"
-              />
-            </div>
-            <div class="px-3.5 py-2.5 flex items-center justify-between gap-2">
-              <span class="text-[#64748B]">记账时间</span>
-              <input
-                v-model="txTime"
-                type="time"
-                class="text-right text-xs font-semibold text-[#18181B] bg-transparent outline-none"
-              />
-            </div>
-            <div class="px-3.5 py-2.5 flex items-center justify-between gap-2">
-              <span class="text-[#64748B]">支付账户</span>
-              <select
-                v-model="selectedWalletId"
-                class="text-right text-xs font-semibold text-[#18181B] bg-transparent outline-none"
-              >
-                <option v-for="w in store.activeWallets" :key="w.id" :value="w.id">
-                  {{ w.name }}
-                </option>
-              </select>
-            </div>
-            <template v-if="manualType === 'expense'">
-              <div class="px-3.5 py-2.5 flex items-center justify-between gap-2">
-                <span class="text-[#64748B]">计入本月预算</span>
-                <ToggleSwitch v-model="includeBudget" aria-label="计入本月预算" />
-              </div>
-              <div class="px-3.5 py-2.5 flex items-center justify-between gap-2">
-                <span class="text-[#64748B]">标记为待报销</span>
-                <ToggleSwitch v-model="reimburse" aria-label="标记为待报销" />
-              </div>
-            </template>
           </div>
         </div>
 
@@ -595,7 +536,7 @@ function onAiViewTx(txId: string) {
               <button
                 type="button"
                 class="shrink-0 text-[11px] font-medium px-2.5 py-1 rounded-full bg-[#F5F6F8] text-[#475569] hover:bg-[#ECEEF2] transition"
-                @click="cycleQuickDate"
+                @click="dtPickerOpen = true"
               >
                 {{ datePillLabel }} · {{ txTime }}
               </button>
@@ -635,19 +576,6 @@ function onAiViewTx(txId: string) {
               >
                 待报销
               </button>
-
-              <button
-                type="button"
-                class="shrink-0 text-[11px] font-medium px-2.5 py-1 rounded-full transition"
-                :class="
-                  showMoreMeta
-                    ? 'bg-[#18181B] text-white'
-                    : 'bg-[#F5F6F8] text-[#64748B] hover:bg-[#ECEEF2]'
-                "
-                @click="showMoreMeta = !showMoreMeta"
-              >
-                {{ showMoreMeta ? '收起时间' : '选日期/时间' }}
-              </button>
             </div>
           </template>
         </MobileKeypad>
@@ -659,5 +587,7 @@ function onAiViewTx(txId: string) {
       v-model="memberId"
       :members="bookMembers"
     />
+
+    <DateTimePickerSheet v-model:open="dtPickerOpen" v-model="dateTimeModel" />
   </BottomSheet>
 </template>
